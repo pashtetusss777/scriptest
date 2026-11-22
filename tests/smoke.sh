@@ -35,7 +35,11 @@ cat > "$scratch/interrupt.sh" <<'SH'
 source ./scriptest.sh
 OUT="$TMPDIR/отчёт с пробелами"
 SYSINFO_FILE="$OUT/sysinfo.txt"
+# В шапке лога заявлен лимит 30 секунд, но его фактическое прерывание проверяется выше.
 run_speed interrupt interrupt 30 'trap "" INT TERM; echo $$ > "$TMPDIR/ready"; exec sleep 30' 'touch "$TMPDIR/fallback"'
+RESULTS=()
+REPORT_LOGS=("$OUT/sysinfo.txt")
+rm -f -- "$OUT/interrupt.txt" "$OUT/interrupt-fallback.txt"
 SH
 (
   for ((i=0; i<100; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
