@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.4"
+VERSION="0.3.5"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -578,7 +578,7 @@ sanitize_stream() {
     line = $0
     # CRLF завершает строку; внутренний CR начинает следующий кадр на той же строке.
     if (substr(line, length(line), 1) == cr) line = substr(line, 1, length(line) - 1)
-    while ((p = index(line, cr)) > 0) { cur = ""; line = substr(line, p + 1) }
+    while ((pos = index(line, cr)) > 0) { cur = ""; line = substr(line, pos + 1) }
     while (line != "") {
       e = index(line, esc)
       if (!e) { put(line); break }
@@ -595,15 +595,15 @@ sanitize_stream() {
           if (params == "" || params == "0") {
             put(esc "[0m")
           } else {
-            n = split(params, p, ";"); res = ""; k = 1
+            n = split(params, pa, ";"); res = ""; k = 1
             while (k <= n) {
-              v = p[k]
+              v = pa[k]
               if (v == "38" || v == "48") {
-                if (p[k+1] == "5" && p[k+2] != "") {
-                  if (v == "38") res = res "38;5;" p[k+2] ";"
+                if (pa[k+1] == "5" && pa[k+2] != "") {
+                  if (v == "38") res = res "38;5;" pa[k+2] ";"
                   k += 3; continue
                 }
-                if (p[k+1] == "2") { k += 5; continue }
+                if (pa[k+1] == "2") { k += 5; continue }
                 k++; continue
               }
               if (v ~ /^(0|1|2|3|4|22|23|24|39|3[0-9]|9[0-7])$/) res = res v ";"
