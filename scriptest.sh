@@ -8,15 +8,15 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.0"
+VERSION="0.3.1"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
 # ----------------------------------------------------------------------------
 if [ -t 1 ]; then
-  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_INFO=$'\033[36m'
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_INFO=$'\033[36m'; C_WHITE=$'\033[97m'
 else
-  C_RESET=''; C_BOLD=''; C_DIM=''; C_OK=''; C_ERR=''; C_INFO=''
+  C_RESET=''; C_BOLD=''; C_DIM=''; C_OK=''; C_ERR=''; C_INFO=''; C_WHITE=''
 fi
 
 info()  { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} $*"; }
@@ -67,7 +67,7 @@ spinner_start() {
         0) dots="   " ;; 1) dots=".  " ;; 2) dots=".. " ;; 3) dots="..." ;;
       esac
       printf '\r\033[2K  %b%s%b %b%s%b  %b%02d:%02d%b  %bтест выполняется%s%b' \
-        "${C_INFO}${C_BOLD}" "${frames:i%n:1}" "${C_RESET}" \
+        "${C_WHITE}${C_BOLD}" "${frames:i%n:1}" "${C_RESET}" \
         "${C_BOLD}" "$label" "${C_RESET}" \
         "${C_DIM}" "$((elapsed / 60))" "$((elapsed % 60))" "${C_RESET}" \
         "${C_DIM}" "$dots" "${C_RESET}"
