@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -142,25 +142,25 @@ install_deps() {
   case "$PKG" in
     apt)
       $SUDO apt-get update -y >/dev/null 2>&1
-      $SUDO apt-get install -y curl wget zip sysbench ca-certificates >/dev/null 2>&1
+      $SUDO apt-get install -y curl wget zip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 >/dev/null 2>&1
       ;;
     dnf)
       $SUDO dnf install -y epel-release >/dev/null 2>&1 || true
-      $SUDO dnf install -y curl wget zip sysbench >/dev/null 2>&1
+      $SUDO dnf install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
       ;;
     yum)
       $SUDO yum install -y epel-release >/dev/null 2>&1 || true
-      $SUDO yum install -y curl wget zip sysbench >/dev/null 2>&1
+      $SUDO yum install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
       ;;
     pacman)
       # sysbench в Arch только в AUR — ставим базу, sysbench пропустим
-      $SUDO pacman -Sy --noconfirm --needed curl wget zip >/dev/null 2>&1
+      $SUDO pacman -Sy --noconfirm --needed curl wget zip jq bc gnu-netcat bind iproute2 >/dev/null 2>&1
       ;;
     zypper)
-      $SUDO zypper --non-interactive install curl wget zip sysbench >/dev/null 2>&1
+      $SUDO zypper --non-interactive install curl wget zip sysbench jq bc netcat-openbsd bind-utils iproute2 >/dev/null 2>&1
       ;;
     apk)
-      $SUDO apk add curl wget zip sysbench >/dev/null 2>&1
+      $SUDO apk add curl wget zip sysbench jq bc netcat-openbsd bind-tools iproute2 >/dev/null 2>&1
       ;;
     "")
       warn "Пакетный менеджер не определён — зависимости не устанавливаю."
@@ -347,7 +347,10 @@ run_test() {
 
   info ">> $title (таймаут ${tmo}s)"
   set +e
-  timeout --preserve-status "$tmo" bash -c "$cmd" 2>&1 | tee -a "$log" | sed -E "$ANSI_STRIP_SED"
+  # stdin закрыт: дочерние скрипты не смогут «повиснуть» в ожидании ввода (apt-подтверждения и т.п.)
+  # sed -u — без буферизации, чтобы вывод появлялся на экран сразу
+  timeout --preserve-status --kill-after=15 "$tmo" bash -c "$cmd" 2>&1 </dev/null \
+    | tee -a "$log" | sed -u -E "$ANSI_STRIP_SED"
   rc="${PIPESTATUS[0]}"
   set -e
 
@@ -585,6 +588,8 @@ main() {
   parse_flags "$@"
 
   info "scriptest v$VERSION"
+  # apt/dnf не должны задавать вопросов из дочерних скриптов
+  export DEBIAN_FRONTEND=noninteractive
   setup_privileges
   detect_pkg
   install_deps
