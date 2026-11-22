@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.9"
+VERSION="0.3.0"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -29,12 +29,64 @@ clear_screen() {
 }
 
 # ----------------------------------------------------------------------------
+# Анимация: тесты пишут в лог, поэтому в терминале держим живую строку
+# ----------------------------------------------------------------------------
+SPINNER_PID=""
+
+spinner_stop() {
+  if [ -n "${SPINNER_PID}" ]; then
+    kill "$SPINNER_PID" 2>/dev/null
+    wait "$SPINNER_PID" 2>/dev/null
+    SPINNER_PID=""
+    if [ -t 1 ]; then printf '\r\033[2K'; fi
+  fi
+  return 0
+}
+
+# spinner_start <подпись>
+spinner_start() {
+  local label="$1" frames n cols
+  [ -t 1 ] || return 0
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*utf-8*|*UTF8*|*utf8*) frames="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" ;;
+    *)                             frames="|/-\\" ;;
+  esac
+  n=${#frames}
+  cols="${COLUMNS:-}"
+  [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || printf 80)"
+  case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
+  # Оставляем место под спиннер, таймер и «тест выполняется…», чтобы строка
+  # не переносилась: иначе \r не сотрёт её хвост.
+  if [ "$cols" -gt 40 ]; then label="${label:0:$((cols - 34))}"; fi
+  (
+    trap 'exit 0' INT TERM
+    local i=0 start=$SECONDS elapsed dots
+    while :; do
+      elapsed=$((SECONDS - start))
+      case $((i % 4)) in
+        0) dots="   " ;; 1) dots=".  " ;; 2) dots=".. " ;; 3) dots="..." ;;
+      esac
+      printf '\r\033[2K  %b%s%b %b%s%b  %b%02d:%02d%b  %bтест выполняется%s%b' \
+        "${C_INFO}${C_BOLD}" "${frames:i%n:1}" "${C_RESET}" \
+        "${C_BOLD}" "$label" "${C_RESET}" \
+        "${C_DIM}" "$((elapsed / 60))" "$((elapsed % 60))" "${C_RESET}" \
+        "${C_DIM}" "$dots" "${C_RESET}"
+      i=$((i + 1))
+      sleep 0.15
+    done
+  ) &
+  SPINNER_PID=$!
+}
+
+# ----------------------------------------------------------------------------
 # Настройки по умолчанию (меняются флагами)
 # ----------------------------------------------------------------------------
 THEME="dark"           # dark | light
 MAKE_PNG=1
 MAKE_ZIP=1
 ASK_BBR=0
+TEST_NO=0
+TEST_TOTAL=0
 ONLY=""                # список id через запятую
 SKIP=""                # список id через запятую
 OUT=""                 # рабочая папка (задаётся позже)
@@ -141,21 +193,113 @@ setup_privileges() {
   fi
 }
 
+# BBR + Cake: файл в /etc/sysctl.d применяет systemd-sysctl при каждой загрузке.
+BBR_CONF="/etc/sysctl.d/99-scriptest-bbr.conf"
+
+# Значение до включения BBR хранится в первой строке конфига комментарием.
+bbr_previous() {
+  local key="$1" fallback="$2" value
+  value="$($SUDO sed -n "s/^# scriptest: было .*${key}=\([^ ]*\).*/\1/p" "$BBR_CONF" 2>/dev/null | head -1)"
+  [ -n "$value" ] || value="$fallback"
+  printf '%s\n' "$value"
+}
+
 enable_bbr() {
-  local available
-  if ! available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)"; then
-    warn "Не удалось проверить поддержку BBR."
+  local cc qdisc note ifc
+  if ! cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"; then
+    warn "Не удалось прочитать текущий алгоритм TCP."
     return 1
   fi
-  if [[ " $available " != *" bbr "* ]] && ! $SUDO modprobe tcp_bbr; then
-    warn "BBR недоступен в этом ядре или нет прав загрузить модуль."
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf '?')"
+
+  # BBR и cake обычно модули: без modprobe sysctl их не увидит.
+  $SUDO modprobe tcp_bbr 2>/dev/null || true
+  $SUDO modprobe sch_cake 2>/dev/null || true
+
+  local avail
+  avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+  if [ -n "$avail" ] && [[ " $avail " != *" bbr "* ]]; then
+    warn "BBR недоступен в этом ядре — настройки не меняю."
     return 1
   fi
-  if ! $SUDO sysctl -w net.ipv4.tcp_congestion_control=bbr; then
-    warn "Не удалось включить BBR. Алгоритм не изменён."
+
+  # Исходные значения запоминаем один раз, чтобы повторный запуск их не затёр.
+  note="$($SUDO grep -m1 '^# scriptest: было ' "$BBR_CONF" 2>/dev/null || true)"
+  [ -n "$note" ] || note="# scriptest: было cc=${cc:-?} qdisc=${qdisc:-?}"
+
+  if ! printf '%s\nnet.core.default_qdisc=cake\nnet.ipv4.tcp_congestion_control=bbr\n' "$note" |
+       $SUDO tee "$BBR_CONF" >/dev/null; then
+    warn "Не удалось записать $BBR_CONF."
     return 1
   fi
-  ok "BBR включён до перезагрузки."
+  $SUDO sysctl -p "$BBR_CONF" >/dev/null 2>&1 || true
+
+  # systemd-sysctl читает /etc/sysctl.d при загрузке: включаем и перезапускаем,
+  # чтобы настройка применилась сразу и пережила перезагрузку.
+  if command -v systemctl >/dev/null 2>&1; then
+    $SUDO systemctl enable systemd-sysctl >/dev/null 2>&1 || true
+    $SUDO systemctl restart systemd-sysctl >/dev/null 2>&1 || true
+  elif command -v rc-update >/dev/null 2>&1; then
+    $SUDO rc-update add sysctl default >/dev/null 2>&1 || true
+    $SUDO rc-service sysctl restart >/dev/null 2>&1 || true
+  fi
+
+  # Cake есть не во всех ядрах — тогда честно оставляем fq_codel.
+  if [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" = cake ]; then
+    qdisc="cake"
+  else
+    qdisc="fq_codel"
+    printf '%s\nnet.core.default_qdisc=%s\nnet.ipv4.tcp_congestion_control=bbr\n' "$note" "$qdisc" |
+      $SUDO tee "$BBR_CONF" >/dev/null
+    $SUDO sysctl -w "net.core.default_qdisc=$qdisc" >/dev/null 2>&1 || true
+    warn "Cake недоступен в этом ядре — оставил $qdisc."
+  fi
+
+  # default_qdisc действует на новые интерфейсы, текущий переключаем вручную.
+  ifc="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
+  if [ -n "$ifc" ] && command -v tc >/dev/null 2>&1; then
+    $SUDO tc qdisc replace dev "$ifc" root "$qdisc" >/dev/null 2>&1 || true
+  fi
+
+  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr ]; then
+    ok "BBR + $qdisc включены и сохранены после перезагрузки."
+    return 0
+  fi
+  warn "BBR не включился: проверь поддержку ядра и права."
+  return 1
+}
+
+disable_bbr() {
+  local cc qdisc avail ifc
+  cc="$(bbr_previous cc cubic)"
+  qdisc="$(bbr_previous qdisc fq_codel)"
+  [[ "$cc" == bbr ]] && cc="cubic"
+  [[ "$qdisc" == cake ]] && qdisc="fq_codel"
+
+  # Если запомненного алгоритма нет в ядре, берём первый доступный.
+  avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+  if [ -n "$avail" ] && [[ " $avail " != *" $cc "* ]]; then
+    cc="${avail%% *}"
+  fi
+
+  $SUDO rm -f "$BBR_CONF"
+  $SUDO sysctl -w "net.ipv4.tcp_congestion_control=$cc" >/dev/null 2>&1 || true
+  $SUDO sysctl -w "net.core.default_qdisc=$qdisc" >/dev/null 2>&1 || true
+  if command -v systemctl >/dev/null 2>&1; then
+    $SUDO systemctl restart systemd-sysctl >/dev/null 2>&1 || true
+  fi
+
+  ifc="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
+  if [ -n "$ifc" ] && command -v tc >/dev/null 2>&1; then
+    $SUDO tc qdisc replace dev "$ifc" root "$qdisc" >/dev/null 2>&1 || true
+  fi
+
+  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" != bbr ]; then
+    ok "BBR выключен, вернул $cc / $qdisc."
+    return 0
+  fi
+  warn "Не удалось вернуть алгоритм TCP — проверь права."
+  return 1
 }
 
 disable_ipv6() {
@@ -455,6 +599,11 @@ run_test() {
 
   info ">> $title (лимит $(format_duration "$tmo"))"
   start=$SECONDS
+  local label="$title"
+  if [ "${TEST_TOTAL:-0}" -gt 0 ]; then
+    label="[$TEST_NO/$TEST_TOTAL] ${title%% — *}"
+  fi
+  spinner_start "$label"
   # wait прерывается сразу; отдельная группа позволяет остановить и потомков теста.
   (
     work="$(mktemp -d "$OUT/.bench-$id-XXXXXX")" || exit 125
@@ -474,6 +623,7 @@ run_test() {
     exit "$rc"
   )
   rc=$?
+  spinner_stop
   if (( rc == 130 )); then exit 130; fi
   if (( rc == 125 )); then die "Не удалось запустить тест или сохранить вывод в $log"; fi
   local elapsed=$((SECONDS - start))
@@ -749,27 +899,40 @@ confirm() {
 }
 
 offer_bbr() {
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr ]; then
-    info "BBR уже включён."
-  elif confirm "Включить BBR перед прогоном (до перезагрузки)?"; then
+  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr ] && [ -f "$BBR_CONF" ]; then
+    info "BBR уже включён и сохранён после перезагрузки."
+  elif confirm "Включить BBR + Cake навсегда (сохранится после перезагрузки)?"; then
     enable_bbr || warn "Продолжаю тесты без изменения алгоритма TCP."
   fi
 }
 
 utilities_menu() {
-  local choice cc ipv6
+  local choice cc qd ipv6 bbr_on
   while true; do
     clear_screen
     cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf '?')"
+    qd="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf '?')"
     ipv6="$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || printf '?')"
     case "$ipv6" in 0) ipv6="включён" ;; 1) ipv6="отключён" ;; esac
-    printf '\n  %bУтилиты%b · изменения до перезагрузки\n\n' "$C_BOLD" "$C_RESET"
-    printf '  1) Включить BBR (текущий алгоритм TCP: %s)\n' "$cc"
+    bbr_on=0
+    [[ "$cc" == bbr && -f "$BBR_CONF" ]] && bbr_on=1
+    printf '\n  %bУтилиты%b · BBR — навсегда, IPv6 — до перезагрузки\n\n' "$C_BOLD" "$C_RESET"
+    if (( bbr_on )); then
+      printf '  1) BBR + Cake — включён (%s / %s) · выключить\n' "$cc" "$qd"
+    else
+      printf '  1) BBR + Cake — выключен (сейчас %s / %s) · включить\n' "$cc" "$qd"
+    fi
     printf '  2) Отключить IPv6 (сейчас: %s)\n' "$ipv6"
     printf '  0) Назад\n\n  ▸ Выбор: '
     read -r choice || return
     case "$choice" in
-      1) if confirm "Включить BBR?"; then enable_bbr; fi ;;
+      1)
+        if (( bbr_on )); then
+          if confirm "Выключить BBR и вернуть прежний алгоритм?"; then disable_bbr; fi
+        elif confirm "Включить BBR + Cake навсегда?"; then
+          enable_bbr
+        fi
+        ;;
       2) disable_ipv6 ;;
       0|q|Q) return ;;
       *) continue ;;
@@ -877,13 +1040,16 @@ main() {
   install_deps
   umask 077
   setup_workdir
-  trap '[ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
+  trap 'spinner_stop; [ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
   ensure_freeze
   render_pngs sysinfo.txt
 
   info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
+  TEST_TOTAL=${#SELECTED[@]}
+  TEST_NO=0
   local id
   for id in "${SELECTED[@]}"; do
+    TEST_NO=$((TEST_NO + 1))
     run_test_by_id "$id"
   done
 
