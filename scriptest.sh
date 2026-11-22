@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.6"
+VERSION="0.1.7"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -31,7 +31,7 @@ clear_screen() {
 # ----------------------------------------------------------------------------
 # Настройки по умолчанию (меняются флагами)
 # ----------------------------------------------------------------------------
-THEME="light"          # light | dark
+THEME="dark"           # dark | light
 MAKE_PNG=1
 MAKE_ZIP=1
 ONLY=""                # список id через запятую
@@ -84,7 +84,7 @@ scriptest v$VERSION — мульти-тест VPS / VDS / Dedicated
   -o, --only <ids>       только выбранные тесты (через запятую), например: --only sysbench,yabs
   -s, --skip <ids>       пропустить указанные тесты
   -l, --list             показать список тестов и выйти
-  -t, --theme <name>     тема скриншотов: light (инь-ян, белый фон) | dark (по умолчанию: light)
+  -t, --theme <name>     тема скриншотов: dark (по умолчанию) | light
       --no-png           не генерировать скриншоты
       --no-zip           не собирать zip-архив
       --workdir <dir>    рабочая папка для результатов
@@ -417,8 +417,9 @@ select_tests() {
 # Скриншоты
 # ----------------------------------------------------------------------------
 render_image() {
-  timeout -k 5 60 "$FREEZE_BIN" - --output "$2" --config base --theme "$3" --language text \
-    --border.color "$4" --border.width 1 --border.radius 8 --font.size 14 --padding 20,28 --wrap 120 < "$1"
+  local input="$1" output="$2"
+  shift 2
+  timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language text --wrap 120 "$@" < "$input"
 }
 
 render_pngs() {
@@ -426,16 +427,20 @@ render_pngs() {
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
   info "Генерирую PNG-скриншоты..."
-  local f image message count=0 palette=monokailight border='#d4d4d4'
-  if [ "$THEME" = dark ]; then palette=native; border='#525252'; fi
+  local f image message count=0
+  local -a style=(--config full)
+  if [ "$THEME" = light ]; then
+    style=(--config base --theme monokailight --border.color '#d4d4d4' --border.width 1
+      --border.radius 8 --font.size 14 --padding 20,28)
+  fi
   for f in "$OUT"/*.txt; do
     [ -s "$f" ] || continue
     image="${f%.txt}.png"
-    if ! message="$(render_image "$f" "$image" "$palette" "$border" 2>&1)" || [ ! -s "$image" ]; then
+    if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
       rm -f -- "$image"
       warn "PNG для ${f##*/} не создан${message:+: ${message%%$'\n'*}}. Пробую SVG."
       image="${f%.txt}.svg"
-      if ! message="$(render_image "$f" "$image" "$palette" "$border" 2>&1)" || [ ! -s "$image" ]; then
+      if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
         rm -f -- "$image"
         warn "SVG тоже не создан${message:+: ${message%%$'\n'*}}."
         continue
