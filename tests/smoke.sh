@@ -41,6 +41,7 @@ RESULTS=()
 REPORT_LOGS=(sysinfo.txt)
 rm -f -- "$OUT"/interrupt*.txt
 SH
+rm -f -- "$OUT"/interrupt*.txt
 (
   for ((i=0; i<100; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
   printf '\003'
