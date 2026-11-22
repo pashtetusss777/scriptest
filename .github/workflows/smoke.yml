@@ -11,6 +11,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -y && sudo apt-get install -y librsvg2-bin
       - run: bash -n scriptest.sh
       - run: bash tests/smoke.sh
