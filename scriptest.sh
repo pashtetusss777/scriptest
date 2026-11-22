@@ -358,7 +358,10 @@ sanitize_stream() {
     while (match(line, /[^\010]\010/)) {
       pos = RSTART
       # mawk работает с байтами: захватываем весь предыдущий UTF-8 символ.
-      while (pos > 1 && substr(line,pos,1) ~ /^[\200-\277]$/) pos--
+      while (pos > 1) { byte = substr(line, pos, 1)
+        if (byte < "\200" || byte > "\277") break
+        pos--
+      }
       line = substr(line,1,pos-1) substr(line,RSTART+2)
     }
     gsub(/\010/, "", line)
