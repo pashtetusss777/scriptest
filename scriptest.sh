@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.5"
+VERSION="0.3.6"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -557,6 +557,8 @@ sanitize_stream() {
   }
   # Текст в текущую строку; backspace удаляет предыдущий символ (с учётом UTF-8).
   function put(s,   p, pre, i, b) {
+    # CR возвращает курсор в начало строки: остаётся только последний кадр.
+    while ((p = index(s, cr)) > 0) { cur = ""; s = substr(s, p + 1) }
     while ((p = index(s, bs)) > 0) {
       pre = substr(s, 1, p - 1)
       i = length(pre)
@@ -576,9 +578,8 @@ sanitize_stream() {
   }
   {
     line = $0
-    # CRLF завершает строку; внутренний CR начинает следующий кадр на той же строке.
-    if (substr(line, length(line), 1) == cr) line = substr(line, 1, length(line) - 1)
-    while ((pos = index(line, cr)) > 0) { cur = ""; line = substr(line, pos + 1) }
+    # Завершающие CR — перевод строки, а не новый кадр.
+    while (substr(line, length(line), 1) == cr) line = substr(line, 1, length(line) - 1)
     while (line != "") {
       e = index(line, esc)
       if (!e) { put(line); break }
