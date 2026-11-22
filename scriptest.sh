@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.6"
+VERSION="0.3.7"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -95,6 +95,7 @@ MONO_FONT=""
 FREEZE_BIN=""
 FREEZE_DIR=""
 declare -a REPORT_LOGS=() REPORT_IMAGES=()
+PREVIEW_SHOWN=0               # превью в терминале уже показало результат теста
 
 # ----------------------------------------------------------------------------
 # Тесты: id|name — description|timeout
@@ -543,9 +544,9 @@ setup_workdir() {
 declare -a RESULTS=()
 TESTS_ELAPSED=0
 
-# Оставляем в потоке только безопасные цвета (30-37, 90-97, 38;5;N, жирный/курсив/
-# подчёркивание). Truecolor (38;2), фоны (48), курсорные CSI и OSC выбрасываем:
-# freeze на них падает, а полная зачистка C0-символов спасает PNG-конвертацию.
+# Оставляем в потоке ANSI-цвета (включая truecolor и фоны — freeze 0.2.2 их
+# понимает) и стили. Выбрасываем курсорные CSI, OSC и прочие C0: они ломают
+# конвертацию в PNG и не несут информации для отчёта.
 sanitize_stream() {
   # C0-символы (кроме \n, \t и ESC=033) убирает tr: не полагаемся на то,
   # понимает ли awk \r, \010 и прочие escape в регулярках (у mawk с этим беда).
@@ -593,26 +594,10 @@ sanitize_stream() {
         params = substr(body, 1, k - 1); final = substr(body, k, 1)
         line = substr(body, k + 1)
         if (final == "m") {
-          if (params == "" || params == "0") {
-            put(esc "[0m")
-          } else {
-            n = split(params, pa, ";"); res = ""; k = 1
-            while (k <= n) {
-              v = pa[k]
-              if (v == "38" || v == "48") {
-                if (pa[k+1] == "5" && pa[k+2] != "") {
-                  if (v == "38") res = res "38;5;" pa[k+2] ";"
-                  k += 3; continue
-                }
-                if (pa[k+1] == "2") { k += 5; continue }
-                k++; continue
-              }
-              if (v ~ /^(0|1|2|3|4|22|23|24|39|3[0-9]|9[0-7])$/) res = res v ";"
-              k++
-            }
-            sub(/;$/, "", res)
-            if (res != "") put(esc "[" res "m")
-          }
+          if (params == "") params = "0"
+          # freeze рисует и truecolor (38;2), и фоны (48;2/48;5) — сохраняем их.
+          if (params ~ /^[0-9;]+$/ && length(params) <= 60) put(esc "[" params "m")
+          else put(esc "[0m")
         } else if (final == "A") {
           cursor_up(params == "" ? 1 : params + 0)
         } else if (final == "K") {
@@ -647,6 +632,7 @@ format_duration() {
 run_test() {
   local id="$1" title="$2" tmo="$3" cmd="$4"
   local log="$OUT/$id.txt" start duration status size rc
+  PREVIEW_SHOWN=0
 
   {
     echo "================================================================"
@@ -707,8 +693,9 @@ run_test() {
     die "Не удалось дописать $log"
   [[ " ${REPORT_LOGS[*]} " == *" $id.txt "* ]] || REPORT_LOGS+=("$id.txt")
   RESULTS+=("$id|$status|$duration")
-  # Кадры анимации не копируются в терминал: пользователь видит итог целиком.
-  sed -n '/^====/,$p' "$log"
+  # Превью chafa уже показало отчёт целиком — не печатаем его второй раз.
+  if (( ! PREVIEW_SHOWN )); then sed -n '/^====/,$p' "$log"; fi
+  PREVIEW_SHOWN=0
   render_pngs "$id.txt"
 }
 
@@ -804,7 +791,8 @@ CONVERTER_TRIED=0
 # Показывает готовый PNG прямо в терминале, если он умеет рисовать картинки.
 show_preview() {
   if [[ -t 1 ]] && command -v chafa >/dev/null; then
-    chafa --size 100x40 "$1" || warn "Терминал не показал превью."
+    PREVIEW_SHOWN=1
+    chafa --size 100x40 "$1" || { PREVIEW_SHOWN=0; warn "Терминал не показал превью."; }
   fi
 }
 

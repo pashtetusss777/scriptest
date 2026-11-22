@@ -52,17 +52,20 @@ fi
 # Логи прерванного теста больше не нужны: полный прогон дальше проходит без них.
 rm -f -- "$OUT"/interrupt*.txt
 
-run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l\033[38;2;10;20;30mTRUE\033[0m \033[38;5;208mORANGE\033[0m \033[32mGREEN\033[0m\n"'
+run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l\033[38;2;10;20;30mTRUE\033[0m \033[48;2;40;40;80mBG\033[0m \033[38;5;208mORANGE\033[0m \033[32mGREEN\033[0m\n"'
 run_test deadline 'Лимит времени' 1 'touch transient.txt; sleep 5'
 [[ "${RESULTS[0]}" == 'speed-test|FAILED|'* &&
    "${RESULTS[1]}" == 'speed-test-fallback|OK|'* &&
    "${RESULTS[2]}" == 'deadline|TIMEOUT|'* ]] || die "Неверные итоги тестов."
 grep -qF $'\033[38;5;208mORANGE\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Цвет 256-палитры не сохранился."
+grep -qF $'\033[38;2;10;20;30mTRUE\033[0m' "$OUT/speed-test-fallback.txt" ||
+  die "Truecolor не сохранился."
+grep -qF $'\033[48;2;40;40;80mBG\033[0m' "$OUT/speed-test-fallback.txt" ||
+  die "Фон truecolor не сохранился."
 grep -qF $'\033[32mGREEN\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Базовый цвет не сохранился."
 grep -q '^TRUE' "$OUT/speed-test-fallback.txt" || die "Текст после truecolor потерялся."
-grep -qF '38;2;' "$OUT/speed-test-fallback.txt" && die "Truecolor не вычищен из лога."
 printf 'BAD1\nBAD2\n\033[2K\033[1A\033[2K\033[1A\033[2KREPORT_OK\n' | sanitize_stream > "$scratch/sanitized.txt"
 grep -qF 'REPORT_OK' "$scratch/sanitized.txt" &&
   ! grep -qF 'BAD' "$scratch/sanitized.txt" ||
