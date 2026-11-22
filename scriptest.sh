@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.7"
+VERSION="0.2.8"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -205,25 +205,25 @@ install_deps() {
   case "$PKG" in
     apt)
       $SUDO apt-get update -y >/dev/null 2>&1
-      $SUDO apt-get install -y curl wget zip unzip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 >/dev/null 2>&1
+      $SUDO apt-get install -y curl wget zip unzip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 fontconfig >/dev/null 2>&1
       ;;
     dnf)
       $SUDO dnf install -y epel-release >/dev/null 2>&1 || true
-      $SUDO dnf install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
+      $SUDO dnf install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute fontconfig >/dev/null 2>&1
       ;;
     yum)
       $SUDO yum install -y epel-release >/dev/null 2>&1 || true
-      $SUDO yum install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
+      $SUDO yum install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute fontconfig >/dev/null 2>&1
       ;;
     pacman)
       # sysbench в Arch только в AUR — ставим базу, sysbench пропустим
-      $SUDO pacman -Sy --noconfirm --needed curl wget zip unzip jq bc gnu-netcat bind iproute2 >/dev/null 2>&1
+      $SUDO pacman -Sy --noconfirm --needed curl wget zip unzip jq bc gnu-netcat bind iproute2 fontconfig >/dev/null 2>&1
       ;;
     zypper)
-      $SUDO zypper --non-interactive install curl wget zip unzip sysbench jq bc netcat-openbsd bind-utils iproute2 >/dev/null 2>&1
+      $SUDO zypper --non-interactive install curl wget zip unzip sysbench jq bc netcat-openbsd bind-utils iproute2 fontconfig >/dev/null 2>&1
       ;;
     apk)
-      $SUDO apk add curl wget zip unzip sysbench jq bc netcat-openbsd bind-tools iproute2 >/dev/null 2>&1
+      $SUDO apk add curl wget zip unzip sysbench jq bc netcat-openbsd bind-tools iproute2 fontconfig >/dev/null 2>&1
       ;;
     "")
       warn "Пакетный менеджер не определён — зависимости не устанавливаю."
@@ -274,6 +274,27 @@ ensure_freeze() {
     MAKE_PNG=0; return 0
   fi
   ok "freeze: $FREEZE_BIN"
+}
+
+# ----------------------------------------------------------------------------
+# Шрифт: без JetBrains Mono PNG рендерится пропорциональным системным шрифтом
+# ----------------------------------------------------------------------------
+ensure_font() {
+  [ "$MAKE_PNG" -eq 1 ] || return 0
+  command -v fc-list >/dev/null 2>&1 && fc-list 2>/dev/null | grep -qi "jetbrains mono" && return 0
+  local fdir="/usr/local/share/fonts"
+  info "Ставлю шрифт JetBrains Mono для скриншотов..."
+  local tmp
+  tmp="$(mktemp -d)" || { warn "Нет временной папки для шрифта."; return 0; }
+  if curl -fsSL --max-time 120 "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip" -o "$tmp/jb.zip" \
+     && unzip -oq "$tmp/jb.zip" "fonts/ttf/JetBrainsMono-Regular.ttf" -d "$tmp" \
+     && { $SUDO mkdir -p "$fdir" && $SUDO install -m 0644 "$tmp/fonts/ttf/JetBrainsMono-Regular.ttf" "$fdir/"; } \
+     && { $SUDO fc-cache -f >/dev/null 2>&1 || fc-cache -f >/dev/null 2>&1 || true; }; then
+    ok "Шрифт установлен."
+  else
+    warn "Не удалось поставить шрифт — скриншоты могут отрисоваться системным шрифтом."
+  fi
+  rm -rf -- "$tmp"
 }
 
 # ----------------------------------------------------------------------------
@@ -862,6 +883,7 @@ main() {
   setup_workdir
   trap '[ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
   ensure_freeze
+  ensure_font
   render_pngs sysinfo.txt
 
   info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
