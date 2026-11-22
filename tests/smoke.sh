@@ -65,7 +65,7 @@ grep -qF $'\033[48;2;40;40;80mBG\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Фон truecolor не сохранился."
 grep -qF $'\033[32mGREEN\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Базовый цвет не сохранился."
-grep -q '^TRUE' "$OUT/speed-test-fallback.txt" || die "Текст после truecolor потерялся."
+grep -qF 'ORANGE' "$OUT/speed-test-fallback.txt" || die "Текст после truecolor потерялся."
 printf 'BAD1\nBAD2\n\033[2K\033[1A\033[2K\033[1A\033[2KREPORT_OK\n' | sanitize_stream > "$scratch/sanitized.txt"
 grep -qF 'REPORT_OK' "$scratch/sanitized.txt" &&
   ! grep -qF 'BAD' "$scratch/sanitized.txt" ||
