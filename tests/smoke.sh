@@ -39,9 +39,7 @@ SYSINFO_FILE="$OUT/sysinfo.txt"
 run_speed interrupt interrupt 30 'trap "" INT TERM; echo $$ > "$TMPDIR/ready"; exec sleep 30' 'touch "$TMPDIR/fallback"'
 RESULTS=()
 REPORT_LOGS=(sysinfo.txt)
-rm -f -- "$OUT"/interrupt*.txt
 SH
-rm -f -- "$OUT"/interrupt*.txt
 (
   for ((i=0; i<100; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
   printf '\003'
@@ -51,6 +49,8 @@ rm -f -- "$OUT"/interrupt*.txt
 if kill -0 "$(cat "$scratch/ready")" 2>/dev/null && [[ "$(ps -o stat= -p "$(cat "$scratch/ready")")" != Z* ]]; then
   die "После Ctrl+C остался процесс теста."
 fi
+# Логи прерванного теста больше не нужны: полный прогон дальше проходит без них.
+rm -f -- "$OUT"/interrupt*.txt
 
 run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l\033[38;2;10;20;30mTRUE\033[0m \033[38;5;208mORANGE\033[0m \033[32mGREEN\033[0m\n"'
 run_test deadline 'Лимит времени' 1 'touch transient.txt; sleep 5'
