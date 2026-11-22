@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.1"
+VERSION="0.1.2"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -24,6 +24,7 @@ ok()    { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} ${C_OK}OK${C_RESET} $*";
 err()   { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} ${C_ERR}ERROR${C_RESET} $*" >&2; }
 warn()  { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} ${C_INFO}WARN${C_RESET} $*"; }
 die()   { err "$*"; exit 1; }
+clear_screen() { printf '\033[2J\033[H'; }
 
 # ----------------------------------------------------------------------------
 # Настройки по умолчанию (меняются флагами)
@@ -88,6 +89,7 @@ parse_flags() {
       --workdir)    OUT="$2"; shift 2 ;;
       -h|--help)    usage; exit 0 ;;
       -v|--version) echo "scriptest v$VERSION"; exit 0 ;;
+      --banner)     print_banner; exit 0 ;;
       *)            err "Неизвестный флаг: $1"; usage; exit 1 ;;
     esac
   done
@@ -529,21 +531,56 @@ print_results() {
 }
 
 # ----------------------------------------------------------------------------
-# Меню
+# Баннер / меню
 # ----------------------------------------------------------------------------
+print_banner() {
+  local ver="v$VERSION"
+  local host ip os
+  host="$(hostname 2>/dev/null || echo '?')"
+  ip="?" os="?"
+  [ -n "${SYSINFO_FILE:-}" ] && [ -f "$SYSINFO_FILE" ] && {
+    ip="$(awk -F': *' '/^IP/{print $2}' "$SYSINFO_FILE")"
+    os="$(awk -F': *' '/^OS/{print $2}' "$SYSINFO_FILE")"
+  }
+  cat <<'BANNER'
+
+   ____  _____ _   _ _____ ____  _____ ____
+  / ___| / ___|| __ )|_ _|| '_ \ | |_  / _ \ / ___|| |_
+  \___ \| |    |  _ \ | | || |_) || __|| |__|\___ \| __|
+   ___) || |___ | |_) | | | | .__/ | |_ |  __| ___) || |_
+  |____/  \____||____/ |___||_|     \__| \___||____/ \__|
+
+BANNER
+  printf '%s\n' "  ${C_BOLD}scriptest ${ver}${C_RESET} ${C_DIM}· мульти-тест сервера${C_RESET}"
+  printf '%s\n' "  ${C_DIM}Host: ${host} · IP: ${ip} · ${os}${C_RESET}"
+  printf '%s\n' "  ${C_DIM}─────────────────────────────────────────────────${C_RESET}"
+}
+
 menu() {
   while true; do
+    clear_screen
+    print_banner
     echo
-    echo "${C_BOLD}===== scriptest v$VERSION =====${C_RESET}"
-    list_tests
-    echo "   a) ${C_BOLD}ЗАПУСТИТЬ ВСЁ${C_RESET}"
-    echo "   q) Выход"
+    printf '%s\n' "  ${C_BOLD}Доступные тесты${C_RESET}"
     echo
-    printf 'Выбери тесты (можно через запятую, напр. 1,3,5), a или q: '
+    local i=1 t id title tmo mins
+    for t in "${TESTS[@]}"; do
+      IFS='|' read -r id title tmo <<< "$t"
+      mins=$(( (tmo + 59) / 60 ))
+      printf '   %s[%2d]%s %-13s %s %s~%d мин%s\n' \
+        "${C_BOLD}" "$i" "${C_RESET}" "$id" "$title" "${C_DIM}" "$mins" "${C_RESET}"
+      i=$((i+1))
+    done
+    echo
+    printf '   %s[ a ]%s Запустить %sВСЕ тесты%s\n' "${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+    printf '   %s[ q ]%s Выход\n' "${C_BOLD}" "${C_RESET}"
+    echo
+    printf '%s\n' "  ${C_DIM}─────────────────────────────────────────────────${C_RESET}"
+    printf '  %s▸%s Номера через запятую (напр. 1,3,5) · a — все · q — выход: ' "${C_INFO}" "${C_RESET}"
     local choice
     read -r choice
     case "$choice" in
-      q|Q) info "Выход."; exit 0 ;;
+      q|Q) clear_screen; info "Выход."; exit 0 ;;
       a|A)
         if confirm_all; then
           SELECTED=()
@@ -587,6 +624,7 @@ confirm_all() {
 main() {
   parse_flags "$@"
 
+  [ -t 1 ] && clear_screen
   info "scriptest v$VERSION"
   # apt/dnf не должны задавать вопросов из дочерних скриптов
   export DEBIAN_FRONTEND=noninteractive
