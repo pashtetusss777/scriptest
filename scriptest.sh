@@ -380,7 +380,7 @@ sanitize_stream() {
                   if (v == "38") res = res "38;5;" p[k+2] ";"
                   k += 3; continue
                 }
-                if (p[k+1] == "2") { k += 4; continue }
+                if (p[k+1] == "2") { k += 5; continue }
                 k++; continue
               }
               if (v ~ /^(0|1|2|3|4|22|23|24|39|3[0-9]|9[0-7])$/) res = res v ";"
