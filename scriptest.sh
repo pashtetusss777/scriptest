@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.1"
+VERSION="0.3.2"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -193,6 +193,53 @@ setup_privileges() {
   fi
 }
 
+# sysctl часто лежит в /usr/sbin, которого нет в PATH обычного пользователя,
+# а в минимальных образах его может не быть вовсе. Читаем /proc напрямую,
+# пишем через sysctl, а если его нет — тоже через /proc.
+sysctl_read() {
+  cat "/proc/sys/${1//./\/}" 2>/dev/null
+}
+
+sysctl_write() {
+  local key="${1%%=*}" value="${1#*=}"
+  if command -v sysctl >/dev/null 2>&1; then
+    $SUDO sysctl -w "$1" >/dev/null 2>&1 && return 0
+  fi
+  printf '%s\n' "$value" | $SUDO tee "/proc/sys/${key//./\/}" >/dev/null 2>&1
+}
+
+modprobe_load() {
+  local m
+  if command -v modprobe >/dev/null 2>&1; then
+    $SUDO modprobe "$1" >/dev/null 2>&1 && return 0
+  fi
+  for m in /sbin/modprobe /usr/sbin/modprobe; do
+    [ -x "$m" ] && $SUDO "$m" "$1" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+default_iface() {
+  local bin=""
+  if command -v ip >/dev/null 2>&1; then bin="ip"
+  elif [ -x /usr/sbin/ip ]; then bin="/usr/sbin/ip"
+  elif [ -x /sbin/ip ]; then bin="/sbin/ip"
+  fi
+  [ -n "$bin" ] || return 0
+  "$bin" route show default 2>/dev/null | awk '{print $5; exit}'
+}
+
+set_qdisc() {
+  local dev="$1" q="$2" bin=""
+  [ -n "$dev" ] || return 0
+  if command -v tc >/dev/null 2>&1; then bin="tc"
+  elif [ -x /usr/sbin/tc ]; then bin="/usr/sbin/tc"
+  elif [ -x /sbin/tc ]; then bin="/sbin/tc"
+  fi
+  [ -n "$bin" ] || return 0
+  $SUDO "$bin" qdisc replace dev "$dev" root "$q" >/dev/null 2>&1 || true
+}
+
 # BBR + Cake: файл в /etc/sysctl.d применяет systemd-sysctl при каждой загрузке.
 BBR_CONF="/etc/sysctl.d/99-scriptest-bbr.conf"
 
@@ -205,19 +252,19 @@ bbr_previous() {
 }
 
 enable_bbr() {
-  local cc qdisc note ifc
-  if ! cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"; then
+  local cc qdisc note avail
+  if ! cc="$(sysctl_read net.ipv4.tcp_congestion_control)" || [ -z "$cc" ]; then
     warn "Не удалось прочитать текущий алгоритм TCP."
     return 1
   fi
-  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf '?')"
+  qdisc="$(sysctl_read net.core.default_qdisc)"
+  [ -n "$qdisc" ] || qdisc="?"
 
   # BBR и cake обычно модули: без modprobe sysctl их не увидит.
-  $SUDO modprobe tcp_bbr 2>/dev/null || true
-  $SUDO modprobe sch_cake 2>/dev/null || true
+  modprobe_load tcp_bbr || true
+  modprobe_load sch_cake || true
 
-  local avail
-  avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+  avail="$(sysctl_read net.ipv4.tcp_available_congestion_control)"
   if [ -n "$avail" ] && [[ " $avail " != *" bbr "* ]]; then
     warn "BBR недоступен в этом ядре — настройки не меняю."
     return 1
@@ -232,7 +279,8 @@ enable_bbr() {
     warn "Не удалось записать $BBR_CONF."
     return 1
   fi
-  $SUDO sysctl -p "$BBR_CONF" >/dev/null 2>&1 || true
+  sysctl_write net.core.default_qdisc=cake || true
+  sysctl_write net.ipv4.tcp_congestion_control=bbr || true
 
   # systemd-sysctl читает /etc/sysctl.d при загрузке: включаем и перезапускаем,
   # чтобы настройка применилась сразу и пережила перезагрузку.
@@ -245,55 +293,50 @@ enable_bbr() {
   fi
 
   # Cake есть не во всех ядрах — тогда честно оставляем fq_codel.
-  if [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" = cake ]; then
+  if [ "$(sysctl_read net.core.default_qdisc)" = cake ]; then
     qdisc="cake"
   else
     qdisc="fq_codel"
     printf '%s\nnet.core.default_qdisc=%s\nnet.ipv4.tcp_congestion_control=bbr\n' "$note" "$qdisc" |
       $SUDO tee "$BBR_CONF" >/dev/null
-    $SUDO sysctl -w "net.core.default_qdisc=$qdisc" >/dev/null 2>&1 || true
+    sysctl_write "net.core.default_qdisc=$qdisc" || true
     warn "Cake недоступен в этом ядре — оставил $qdisc."
   fi
 
   # default_qdisc действует на новые интерфейсы, текущий переключаем вручную.
-  ifc="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
-  if [ -n "$ifc" ] && command -v tc >/dev/null 2>&1; then
-    $SUDO tc qdisc replace dev "$ifc" root "$qdisc" >/dev/null 2>&1 || true
-  fi
+  set_qdisc "$(default_iface)" "$qdisc"
 
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr ]; then
+  if [ "$(sysctl_read net.ipv4.tcp_congestion_control)" = bbr ]; then
     ok "BBR + $qdisc включены и сохранены после перезагрузки."
     return 0
   fi
-  warn "BBR не включился: проверь поддержку ядра и права."
+  $SUDO rm -f "$BBR_CONF"
+  warn "BBR не включился: проверь поддержку ядра и права. Конфиг не сохранён."
   return 1
 }
 
 disable_bbr() {
-  local cc qdisc avail ifc now_cc now_qd
+  local cc qdisc avail now_cc now_qd
   cc="$(bbr_previous cc cubic)"
   qdisc="$(bbr_previous qdisc fq_codel)"
 
   # Если запомненного алгоритма нет в ядре, берём первый доступный.
-  avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+  avail="$(sysctl_read net.ipv4.tcp_available_congestion_control)"
   if [ -n "$avail" ] && [[ " $avail " != *" $cc "* ]]; then
     cc="${avail%% *}"
   fi
 
   $SUDO rm -f "$BBR_CONF"
-  $SUDO sysctl -w "net.ipv4.tcp_congestion_control=$cc" >/dev/null 2>&1 || true
-  $SUDO sysctl -w "net.core.default_qdisc=$qdisc" >/dev/null 2>&1 || true
+  sysctl_write "net.ipv4.tcp_congestion_control=$cc" || true
+  sysctl_write "net.core.default_qdisc=$qdisc" || true
   if command -v systemctl >/dev/null 2>&1; then
     $SUDO systemctl restart systemd-sysctl >/dev/null 2>&1 || true
   fi
 
-  ifc="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
-  if [ -n "$ifc" ] && command -v tc >/dev/null 2>&1; then
-    $SUDO tc qdisc replace dev "$ifc" root "$qdisc" >/dev/null 2>&1 || true
-  fi
+  set_qdisc "$(default_iface)" "$qdisc"
 
-  now_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
-  now_qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+  now_cc="$(sysctl_read net.ipv4.tcp_congestion_control)"
+  now_qd="$(sysctl_read net.core.default_qdisc)"
   if [ "$now_cc" = "$cc" ] && [ "$now_qd" = "$qdisc" ]; then
     ok "Вернул прежние настройки TCP: $cc / $qdisc."
     return 0
@@ -311,13 +354,13 @@ disable_ipv6() {
   fi
   warn "Отключение IPv6 может оборвать соединения. Продолжай только при доступе по IPv4 или через консоль."
   confirm "Отключить IPv6 до перезагрузки?" || return 1
-  if ! previous="$(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null)" ||
-     ! $SUDO sysctl -w net.ipv6.conf.default.disable_ipv6=1; then
+  if ! previous="$(sysctl_read net.ipv6.conf.default.disable_ipv6)" ||
+     ! sysctl_write net.ipv6.conf.default.disable_ipv6=1; then
     warn "Не удалось отключить IPv6."
     return 1
   fi
-  if ! $SUDO sysctl -w net.ipv6.conf.all.disable_ipv6=1; then
-    $SUDO sysctl -w "net.ipv6.conf.default.disable_ipv6=$previous" ||
+  if ! sysctl_write net.ipv6.conf.all.disable_ipv6=1; then
+    sysctl_write "net.ipv6.conf.default.disable_ipv6=$previous" ||
       warn "Не удалось вернуть настройку IPv6 по умолчанию."
     warn "Не удалось отключить IPv6 на текущих интерфейсах."
     return 1
@@ -487,7 +530,7 @@ setup_workdir() {
     echo "CPU      : $cpu_model ($cores vCPU)"
     echo "RAM      : ${ram_gb} GB"
     echo "Disk /   : $disk"
-    echo "TCP CC   : $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '?')"
+    echo "TCP CC   : $(sysctl_read net.ipv4.tcp_congestion_control || echo '?')"
     echo "Date     : $(date -u '+%Y-%m-%d %H:%M UTC')"
   } > "$SYSINFO_FILE" || die "Не удалось записать $SYSINFO_FILE"
 
@@ -899,7 +942,7 @@ confirm() {
 }
 
 offer_bbr() {
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr ] && [ -f "$BBR_CONF" ]; then
+  if [ "$(sysctl_read net.ipv4.tcp_congestion_control)" = bbr ] && [ -f "$BBR_CONF" ]; then
     info "BBR уже включён и сохранён после перезагрузки."
   elif confirm "Включить BBR + Cake навсегда (сохранится после перезагрузки)?"; then
     enable_bbr || warn "Продолжаю тесты без изменения алгоритма TCP."
@@ -910,9 +953,12 @@ utilities_menu() {
   local choice cc qd ipv6 bbr_on
   while true; do
     clear_screen
-    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf '?')"
-    qd="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf '?')"
-    ipv6="$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || printf '?')"
+    cc="$(sysctl_read net.ipv4.tcp_congestion_control)"
+    qd="$(sysctl_read net.core.default_qdisc)"
+    ipv6="$(sysctl_read net.ipv6.conf.all.disable_ipv6)"
+    [ -n "$cc" ] || cc="?"
+    [ -n "$qd" ] || qd="?"
+    [ -n "$ipv6" ] || ipv6="?"
     case "$ipv6" in 0) ipv6="включён" ;; 1) ipv6="отключён" ;; esac
     bbr_on=0
     [[ "$cc" == bbr && -f "$BBR_CONF" ]] && bbr_on=1

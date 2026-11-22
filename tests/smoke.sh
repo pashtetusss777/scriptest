@@ -96,33 +96,25 @@ SUDO="" # Следующие проверки используют функци�
 BBR_CONF="$scratch/bbr.conf"
 printf 'cubic\n'    > "$scratch/cc"
 printf 'fq_codel\n' > "$scratch/qdisc"
-sysctl() {
-  case "$*" in
-    '-n net.ipv4.tcp_congestion_control')            cat "$scratch/cc" ;;
-    '-n net.core.default_qdisc')                     cat "$scratch/qdisc" ;;
-    '-n net.ipv4.tcp_available_congestion_control')  printf '%s\n' 'reno cubic bbr' ;;
-    '-n net.ipv6.conf.default.disable_ipv6')         printf '%s\n' 0 ;;
-    -p*)
-      while IFS='=' read -r k v; do
-        case "$k" in
-          net.ipv4.tcp_congestion_control) printf '%s\n' "$v" > "$scratch/cc" ;;
-          net.core.default_qdisc)          printf '%s\n' "$v" > "$scratch/qdisc" ;;
-        esac
-      done < "$2"
-      ;;
-    -w*)
-      printf '%s\n' "$2" >> "$scratch/sysctl-writes"
-      case "$2" in
-        net.ipv4.tcp_congestion_control=*) printf '%s\n' "${2#*=}" > "$scratch/cc" ;;
-        net.core.default_qdisc=*)          printf '%s\n' "${2#*=}" > "$scratch/qdisc" ;;
-      esac
-      ;;
+sysctl_read() {
+  case "$1" in
+    net.ipv4.tcp_congestion_control)           cat "$scratch/cc" ;;
+    net.core.default_qdisc)                    cat "$scratch/qdisc" ;;
+    net.ipv4.tcp_available_congestion_control) printf '%s\n' 'reno cubic bbr' ;;
+    net.ipv6.conf.default.disable_ipv6)        printf '%s\n' 0 ;;
     *) return 1 ;;
   esac
 }
+sysctl_write() {
+  printf '%s\n' "$1" >> "$scratch/sysctl-writes"
+  case "$1" in
+    net.ipv4.tcp_congestion_control=*) printf '%s\n' "${1#*=}" > "$scratch/cc" ;;
+    net.core.default_qdisc=*)          printf '%s\n' "${1#*=}" > "$scratch/qdisc" ;;
+  esac
+}
 systemctl() { printf '%s\n' "$*" >> "$scratch/systemctl-calls"; }
-modprobe() { return 0; }
-ip() { return 0; }
+modprobe_load() { return 0; }
+default_iface() { return 0; }
 
 offer_bbr <<< n
 [ ! -e "$BBR_CONF" ] || die "BBR включён без согласия."
