@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.8"
+VERSION="0.1.9"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -34,13 +34,11 @@ clear_screen() {
 THEME="dark"           # dark | light
 MAKE_PNG=1
 MAKE_ZIP=1
-MAKE_UPLOAD=1
 ASK_BBR=0
 ONLY=""                # список id через запятую
 SKIP=""                # список id через запятую
 OUT=""                 # рабочая папка (задаётся позже)
 OUT_CREATED=0
-ZIP_PATH=""
 FREEZE_BIN=""
 FREEZE_DIR=""
 declare -a REPORT_LOGS=() REPORT_IMAGES=()
@@ -91,13 +89,10 @@ scriptest v$VERSION — мульти-тест VPS / VDS / Dedicated
   -l, --list             показать список тестов и выйти
   -t, --theme <name>     тема скриншотов: dark (по умолчанию) | light
       --no-png           не генерировать скриншоты
-      --no-zip           не собирать и не загружать ZIP
-      --no-upload        оставить полный отчёт на сервере, не загружать в Litterbox
+      --no-zip           не собирать zip-архив
       --workdir <dir>    рабочая папка для результатов
   -h, --help             эта справка
   -v, --version          версия
-
-По умолчанию ZIP с картинками загружается в Litterbox на 1 час.
 EOF
 }
 
@@ -111,7 +106,6 @@ parse_flags() {
       -t|--theme)   THEME="$2"; shift 2 ;;
       --no-png)     MAKE_PNG=0; shift ;;
       --no-zip)     MAKE_ZIP=0; shift ;;
-      --no-upload)  MAKE_UPLOAD=0; shift ;;
       --workdir)    OUT="$2"; shift 2 ;;
       -h|--help)    usage; exit 0 ;;
       -v|--version) echo "scriptest v$VERSION"; exit 0 ;;
@@ -515,7 +509,7 @@ render_pngs() {
 }
 
 # ----------------------------------------------------------------------------
-# Отчёт, ZIP и загрузка
+# Отчёт и ZIP
 # ----------------------------------------------------------------------------
 make_summary() {
   local md="$OUT/summary.md"
@@ -550,51 +544,16 @@ make_zip() {
   [ "$MAKE_ZIP" -eq 1 ] || return 0
   command -v zip >/dev/null 2>&1 || { warn "zip не найден — архив не собран (файлы лежат в $OUT)."; return 0; }
   local archive="$OUT.zip"
-  local -a files=("${REPORT_IMAGES[@]}")
-  if (( ! MAKE_UPLOAD || ${#files[@]} == 0 )); then
-    files+=(summary.md "${REPORT_LOGS[@]}")
-  fi
+  local -a files=(summary.md "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}")
   if [ -e "$archive" ] || [ -L "$archive" ]; then
     warn "Архив уже существует: $archive. Не перезаписываю."
     return 0
   fi
   ( cd -- "$OUT" && zip -q "$archive" "${files[@]}" ) ||
     { warn "Ошибка сборки архива. Отчёт остался в $OUT."; return 0; }
-  ZIP_PATH="$archive"
   ok "Архив: $archive"
   info "Скачай с компьютера (замени SERVER на адрес, по которому подключаешься по SSH):"
   printf '  scp %q .\n' "$(id -un)@SERVER:$archive"
-}
-
-upload_zip() {
-  (( MAKE_UPLOAD && ${#REPORT_IMAGES[@]} > 0 )) && [ -n "$ZIP_PATH" ] || return 1
-  local link path="${ZIP_PATH//\\/\\\\}"
-  path="${path//\"/\\\"}"
-  info "Загружаю ZIP с изображениями в Litterbox на 1 час..."
-  if ! link="$(curl -q -fsS --proto '=https' --connect-timeout 10 --max-time 120 \
-    -F 'reqtype=fileupload' -F 'time=1h' -F "fileToUpload=@\"$path\";filename=scriptest.zip" \
-    https://litterbox.catbox.moe/resources/internals/api.php)"; then
-    warn "Загрузка не удалась. Файлы не удалены."
-    return 1
-  fi
-  link="${link%$'\r'}"
-  if [[ ! "$link" =~ ^https://litter\.catbox\.moe/[a-zA-Z0-9_-]+\.zip$ ]]; then
-    warn "Litterbox не вернул ссылку на ZIP. Файлы не удалены."
-    return 1
-  fi
-  ok "Ссылка на 1 час: $link"
-}
-
-cleanup_report() {
-  if (( ${#REPORT_IMAGES[@]} != ${#REPORT_LOGS[@]} )); then
-    warn "Часть скриншотов не создана. Рабочие файлы сохранены в $OUT"
-    return
-  fi
-  local file
-  for file in summary.md "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}"; do
-    rm -f -- "$OUT/$file" || warn "Не удалось удалить $OUT/$file"
-  done
-  if (( OUT_CREATED )); then rmdir -- "$OUT" 2>/dev/null || :; fi
 }
 
 print_results() {
@@ -697,9 +656,6 @@ menu() {
       "${C_OK}${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
     printf '  %b u)%b Утилиты (BBR, IPv6)\n' "${C_BOLD}" "${C_RESET}"
     printf '  %b q)%b Выход\n' "${C_BOLD}" "${C_RESET}"
-    if (( MAKE_UPLOAD && MAKE_PNG && MAKE_ZIP )); then
-      printf '\n  ZIP с картинками отправится в Litterbox на 1 час.\n'
-    fi
     echo
     printf '  %b─────────────────────────────────────────────────%b\n' "${C_DIM}" "${C_RESET}"
     printf '  %b▸%b Номера через запятую · a — все · u — утилиты · q — выход: ' "${C_INFO}" "${C_RESET}"
@@ -764,9 +720,6 @@ main() {
   fi
 
   [ ${#SELECTED[@]} -gt 0 ] || die "Не выбран ни один тест."
-  if (( MAKE_UPLOAD && MAKE_PNG && MAKE_ZIP )); then
-    info "В Litterbox уйдут только картинки (могут содержать IP и hostname). Без отправки: --no-upload."
-  fi
   if (( ASK_BBR )); then offer_bbr; fi
   detect_pkg
   install_deps
@@ -786,12 +739,7 @@ main() {
   render_pngs
   make_summary
   make_zip
-  if upload_zip; then
-    cleanup_report
-    info "Локальный ZIP сохранён: $ZIP_PATH"
-  else
-    info "Файлы отчёта: $OUT"
-  fi
+  info "Готово. Архив и файлы отчёта: $(dirname "$OUT")"
 }
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then

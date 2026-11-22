@@ -11,7 +11,6 @@ mkdir -p "$OUT/bin" || exit 1
 SYSINFO_FILE="$OUT/sysinfo.txt"
 printf 'OS       : Linux\n' > "$SYSINFO_FILE"
 REPORT_LOGS=(sysinfo.txt)
-printf 'Личный файл\n' > "$OUT/keep.txt"
 
 run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l900 Mbit/s\n"'
 run_test deadline 'Лимит времени' 1 'touch transient.txt; sleep 5'
@@ -28,34 +27,11 @@ for id in sysinfo speed-test speed-test-fallback deadline; do
   [ "$signature" = 89504e470d0a1a0a ] || die "Не создан PNG для $id."
 done
 
-MAKE_UPLOAD=0
 make_summary
 grep -Fq 'speed-test-fallback.png' "$OUT/summary.md" || die "Скриншот отсутствует в сводке."
 make_zip
-[ "$(unzip -Z1 "$ZIP_PATH" | wc -l)" -eq 9 ] || die "Локальный ZIP содержит неверный набор файлов."
-unzip -tq "$ZIP_PATH" || exit 1
-mv -- "$ZIP_PATH" "$scratch/full.zip" || exit 1
-
-MAKE_UPLOAD=1
-make_zip
-[ "$(unzip -Z1 "$ZIP_PATH" | sort)" = "$(printf '%s\n' "${REPORT_IMAGES[@]}" | sort)" ] ||
-  die "В ZIP для облака попали не только скриншоты."
-unzip -tq "$ZIP_PATH" || exit 1
-
-curl() {
-  [[ "$*" == *'time=1h'* && "$*" == *"fileToUpload=@\"$ZIP_PATH\";filename=scriptest.zip"* &&
-     "${*: -1}" == https://litterbox.catbox.moe/resources/internals/api.php ]] || return 2
-  printf '%s\n' "$UPLOAD_RESPONSE"
-}
-UPLOAD_RESPONSE="Не удалось сохранить файл."
-if upload_zip; then die "Ошибка сервиса принята за ссылку."; fi
-[ -f "$OUT/sysinfo.txt" ] || die "Логи удалены при неудачной загрузке."
-UPLOAD_RESPONSE="https://litter.catbox.moe/abc123.zip"
-upload_zip || die "Действительная ссылка на ZIP не принята."
-cleanup_report
-[ -f "$ZIP_PATH" ] && [ -f "$OUT/keep.txt" ] && [ ! -e "$OUT/sysinfo.txt" ] &&
-  [ ! -e "$OUT/sysinfo.png" ] && [ ! -e "$OUT/summary.md" ] ||
-  die "Удалены не те файлы."
+[ "$(unzip -Z1 "$OUT.zip" | wc -l)" -eq 9 ] || die "Архив содержит неверный набор файлов."
+unzip -tq "$OUT.zip" || exit 1
 
 sysctl() {
   case "$*" in
