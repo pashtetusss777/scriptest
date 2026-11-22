@@ -40,7 +40,7 @@ bash scriptest.sh
 | 3 | ipregion | Какой регион видят сайты по IP |
 | 4 | dpi | Блокировка по DPI (для российских серверов) |
 | 5 | insta | Блокировка аудио в Instagram |
-| 6 | speed-ru | Скорость к российским провайдерам (bench.gig.ovh → bench.tlab.pw) |
+| 6 | speed-ru | Скорость к российским провайдерам (bench.tlab.pw) |
 | 7 | speed-world | Скорость к зарубежным провайдерам (bench.sh → speed.tlab.pw) |
 | 8 | yabs | Диск, сеть iperf3, GeekBench ([YABS](https://yabs.sh)) |
 | 9 | geocheck | [GeoCheck](https://geocheck.ing) — только по номеру в меню или через `--only geocheck`. В полный прогон не входит. |

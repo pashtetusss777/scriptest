@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.5"
+VERSION="0.2.6"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -52,7 +52,7 @@ TESTS=(
   "ipregion|IP Region — регион по IP|120"
   "dpi|CensorCheck — блок по DPI (серверы РФ)|360"
   "insta|Instagram — проверка аудио|300"
-  "speed-ru|bench.gig.ovh — скорость к РФ-провайдерам|1500"
+  "speed-ru|bench.tlab.pw — скорость к РФ-провайдерам|1500"
   "speed-world|bench.sh — скорость к зарубежным провайдерам|1500"
   "yabs|YABS — диск, сеть iperf3, GeekBench|1800"
   "geocheck|GeoCheck — геолокация IP (только по выбору)|300"
@@ -423,7 +423,6 @@ format_duration() {
 run_test() {
   local id="$1" title="$2" tmo="$3" cmd="$4"
   local log="$OUT/$id.txt" start duration status size rc
-  local -a codes
 
   {
     echo "================================================================"
@@ -436,17 +435,28 @@ run_test() {
 
   info ">> $title (лимит $(format_duration "$tmo"))"
   start=$SECONDS
-  # Каждый тест пишет временные файлы в отдельный каталог, а не в папку пользователя.
+  # wait прерывается сразу; отдельная группа позволяет остановить и потомков теста.
   (
     work="$(mktemp -d "$OUT/.bench-$id-XXXXXX")" || exit 125
     trap 'rm -rf -- "$work"' EXIT
     cd -- "$work" || exit 125
-    timeout -k 15 "$tmo" bash -o pipefail -c "$cmd"
-  ) 2>&1 </dev/null | sanitize_stream | tee -a "$log"
-  codes=("${PIPESTATUS[@]}")
+    mkfifo output || exit 125
+    local runner='' logger=''
+    trap 'for pid in "$runner" "$logger"; do [[ -z "$pid" ]] || kill -KILL -- "-$pid" 2>/dev/null; done; wait 2>/dev/null; exit 130' INT TERM
+    set -m
+    (set +m; set -o pipefail; sanitize_stream < output | tee -a "$log") &
+    logger=$!
+    timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > output 2>&1 &
+    runner=$!
+    wait "$runner"; rc=$?
+    runner=''
+    wait "$logger" || exit 125
+    exit "$rc"
+  )
+  rc=$?
+  if (( rc == 130 )); then exit 130; fi
+  if (( rc == 125 )); then die "Не удалось запустить тест или сохранить вывод в $log"; fi
   duration="$(format_duration "$((SECONDS - start))")"
-  rc="${codes[0]}"
-  ((codes[1] == 0 && codes[2] == 0)) || die "Не удалось сохранить вывод в $log"
 
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     status="TIMEOUT"
@@ -504,7 +514,7 @@ run_test_by_id() {
     ipregion)    run_test "$id" "$title" "$tmo" "bash <(wget -qO - https://github.com/vernette/ipregion/raw/master/ipregion.sh)" ;;
     dpi)         run_test "$id" "$title" "$tmo" "bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi" ;;
     insta)       run_test "$id" "$title" "$tmo" "bash <(curl -L -s https://bench.openode.xyz/checker_inst.sh)" ;;
-    speed-ru)    run_speed "$id" "$title" "$tmo" "wget -qO- bench.gig.ovh | bash" "wget -qO- bench.tlab.pw | bash" ;;
+    speed-ru)    run_test "$id" "$title" "$tmo" "wget -qO- bench.tlab.pw | bash" ;;
     speed-world) run_speed "$id" "$title" "$tmo" "wget -qO- bench.sh | bash" "wget -qO- speed.tlab.pw | bash" ;;
     yabs)        run_yabs ;;
     geocheck)    run_test "$id" "$title" "$tmo" "curl -fsSL https://geocheck.ing | sh" ;;

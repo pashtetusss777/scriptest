@@ -30,6 +30,23 @@ SYSINFO_FILE="$OUT/sysinfo.txt"
 printf 'OS       : Linux\n' > "$SYSINFO_FILE"
 REPORT_LOGS=(sysinfo.txt)
 
+# Настоящий Ctrl+C в PTY; даже процесс, игнорирующий INT/TERM, не должен пережить тест.
+cat > "$scratch/interrupt.sh" <<'SH'
+source ./scriptest.sh
+OUT="$TMPDIR/отчёт с пробелами"
+SYSINFO_FILE="$OUT/sysinfo.txt"
+run_speed interrupt interrupt 30 'trap "" INT TERM; echo $$ > "$TMPDIR/ready"; exec sleep 30' 'touch "$TMPDIR/fallback"'
+SH
+(
+  for ((i=0; i<100; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
+  printf '\003'
+) | timeout 8 script -qec 'bash "$TMPDIR/interrupt.sh"' /dev/null > "$scratch/interrupt.log"
+[[ $? == 130 && -s "$scratch/ready" && ! -e "$scratch/fallback" ]] ||
+  { cat "$scratch/interrupt.log"; die "Ctrl+C не прервал тест."; }
+if kill -0 "$(cat "$scratch/ready")" 2>/dev/null && [[ "$(ps -o stat= -p "$(cat "$scratch/ready")")" != Z* ]]; then
+  die "После Ctrl+C остался процесс теста."
+fi
+
 run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l\033[38;2;10;20;30mTRUE\033[0m \033[38;5;208mORANGE\033[0m \033[32mGREEN\033[0m\n"'
 run_test deadline 'Лимит времени' 1 'touch transient.txt; sleep 5'
 [[ "${RESULTS[0]}" == 'speed-test|FAILED|'* &&
