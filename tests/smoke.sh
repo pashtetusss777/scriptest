@@ -21,7 +21,7 @@ grep -qF $'\033[38;5;208mORANGE\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Цвет 256-палитры не сохранился."
 grep -qF $'\033[32mGREEN\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Базовый цвет не сохранился."
-grep -qxF 'TRUE ' "$OUT/speed-test-fallback.txt" || die "Текст после truecolor потерялся."
+grep -q '^TRUE' "$OUT/speed-test-fallback.txt" || die "Текст после truecolor потерялся."
 grep -qF '38;2;' "$OUT/speed-test-fallback.txt" && die "Truecolor не вычищен из лога."
 if compgen -G "$OUT/.bench-*" >/dev/null; then die "Временные файлы теста не удалены."; fi
 
