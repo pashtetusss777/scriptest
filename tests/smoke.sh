@@ -12,12 +12,14 @@ SYSINFO_FILE="$OUT/sysinfo.txt"
 printf 'OS       : Linux\n' > "$SYSINFO_FILE"
 REPORT_LOGS=(sysinfo.txt)
 
-run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l900 Mbit/s\n"'
+run_speed speed-test 'Тест скорости' 5 'false | cat' 'printf "\033[?25l\033[38;2;10;20;30mTRUE\033[0m \033[38;5;208mORANGE\033[0m \033[32mGREEN\033[0m\n"'
 run_test deadline 'Лимит времени' 1 'touch transient.txt; sleep 5'
 [[ "${RESULTS[0]}" == 'speed-test|FAILED|'* &&
    "${RESULTS[1]}" == 'speed-test-fallback|OK|'* &&
    "${RESULTS[2]}" == 'deadline|TIMEOUT|'* ]] || die "Неверные итоги тестов."
-grep -qxF '900 Mbit/s' "$OUT/speed-test-fallback.txt" || die "Лог содержит управляющие символы."
+grep -qxF $'\033[38;5;208mORANGE\033[0m \033[32mGREEN\033[0m' "$OUT/speed-test-fallback.txt" ||
+  die "Цвета в логе не сохранились."
+grep -qF '38;2;' "$OUT/speed-test-fallback.txt" && die "Truecolor не вычищен из лога."
 if compgen -G "$OUT/.bench-*" >/dev/null; then die "Временные файлы теста не удалены."; fi
 
 ensure_freeze

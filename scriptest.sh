@@ -8,7 +8,9 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.10"
+VERSION="0.2.0"
+
+SELF_URL="https://raw.githubusercontent.com/pashtetusss777/scriptest/main/scriptest.sh"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -348,7 +350,68 @@ setup_workdir() {
 declare -a RESULTS=()
 TESTS_ELAPSED=0
 
-ANSI_STRIP_SED='s/\x1B\[[0-?]*[ -/]*[@-~]//g; s/\x1B\][^\x07\x1B]*(\x07|\x1B\\)//g; s/\x1B[>=]//g; s/\r$//'
+# Оставляем в потоке только безопасные цвета (30-37, 90-97, 38;5;N, жирный/курсив/
+# подчёркивание). Truecolor (38;2), фоны (48), курсорные CSI и OSC выбрасываем:
+# freeze на них падает, а полная зачистка C0-символов спасает PNG-конвертацию.
+sanitize_stream() {
+  awk '
+  BEGIN { esc = sprintf("%c", 27) }
+  {
+    line = $0; out = ""
+    while (1) {
+      c1 = index(line, esc "["); c2 = index(line, esc "]")
+      if (!c1 && !c2) break
+      if (c1 && (!c2 || c1 < c2)) {
+        out = out substr(line, 1, c1 - 1)
+        rest = substr(line, c1 + 2)
+        match(rest, /^[0-9;:?<=>]*/)
+        params = substr(rest, 1, RLENGTH)
+        tail = substr(rest, RLENGTH + 1)
+        final = substr(tail, 1, 1)
+        if (final == "m") {
+          if (params == "" || params == "0") {
+            out = out esc "[0m"
+          } else {
+            n = split(params, p, ";"); res = ""; k = 1
+            while (k <= n) {
+              v = p[k]
+              if (v == "38" || v == "48") {
+                if (p[k+1] == "5" && p[k+2] != "") {
+                  if (v == "38") res = res "38;5;" p[k+2] ";"
+                  k += 3; continue
+                }
+                if (p[k+1] == "2") { k += 4; continue }
+                k++; continue
+              }
+              if (v ~ /^(0|1|2|3|4|22|23|24|39|3[0-9]|9[0-7])$/) res = res v ";"
+              k++
+            }
+            sub(/;$/, "", res)
+            if (res != "") out = out esc "[" res "m"
+          }
+          line = substr(tail, 2)
+        } else if (final ~ /[@-~]/) {
+          line = substr(tail, 2)   # не-SGR CSI: курсоры, режимы — выбрасываем
+        } else {
+          line = tail              # обрывок последовательности — теряем ESC[
+        }
+        continue
+      }
+      # OSC (заголовок окна и т.п.): глотаем до BEL или ESC-\
+      out = out substr(line, 1, c2 - 1)
+      rest = substr(line, c2 + 2)
+      bel = index(rest, "\007"); st = index(rest, esc "\\")
+      if (bel && (!st || bel < st)) rest = substr(rest, bel + 1)
+      else if (st) rest = substr(rest, st + 1)
+      else rest = ""
+      line = rest
+    }
+    line = out line
+    gsub(/[\r\000-\010\013\014\016-\037\177]/, "", line)
+    print line
+    fflush()
+  }'
+}
 
 format_duration() {
   local seconds="$1"
@@ -378,7 +441,7 @@ run_test() {
     trap 'rm -rf -- "$work"' EXIT
     cd -- "$work" || exit 125
     timeout -k 15 "$tmo" bash -o pipefail -c "$cmd"
-  ) 2>&1 </dev/null | sed -u -E "$ANSI_STRIP_SED" | tee -a "$log"
+  ) 2>&1 </dev/null | sanitize_stream | tee -a "$log"
   codes=("${PIPESTATUS[@]}")
   duration="$(format_duration "$((SECONDS - start))")"
   rc="${codes[0]}"
@@ -474,7 +537,8 @@ select_tests() {
 render_image() {
   local input="$1" output="$2"
   shift 2
-  timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language text --wrap 120 "$@" < "$input"
+  # --language ansi: freeze рисует текст с сохранением ANSI-цветов из лога
+  timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 "$@" < "$input"
 }
 
 render_pngs() {
@@ -702,6 +766,22 @@ confirm_all() {
 # ----------------------------------------------------------------------------
 # main
 # ----------------------------------------------------------------------------
+
+# Запуск через «curl … | bash»: stdin занят скриптом, меню не сможет читать ввод.
+# Скачиваем скрипт во временный файл и перезапускаемся — тогда stdin остаётся терминалом.
+case "$0" in
+  bash|sh|*/bash|*/sh|/dev/*|/proc/self/fd/*)
+    if [ ! -t 0 ] && [ -t 1 ]; then
+      info "Скрипт пришёл по пайпу — скачиваю его во временный файл и перезапускаюсь..."
+      self_tmp="$(mktemp "${TMPDIR:-/tmp}/scriptest-XXXXXX.sh")" ||
+        die "Не удалось создать временный файл."
+      curl -fsSL --max-time 60 "$SELF_URL" -o "$self_tmp" ||
+        die "Не удалось скачать скрипт с $SELF_URL"
+      exec bash "$self_tmp" "$@"
+    fi
+    ;;
+esac
+
 main() {
   parse_flags "$@"
   case "$THEME" in light|dark) ;; *) die "Тема должна быть light или dark." ;; esac
