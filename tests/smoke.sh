@@ -32,6 +32,13 @@ for id in sysinfo speed-test speed-test-fallback deadline; do
   [ "$signature" = 89504e470d0a1a0a ] || die "Не создан PNG для $id."
 done
 
+# Проверяем запасной путь: SVG → PNG через rsvg-convert
+render_image "$OUT/sysinfo.txt" "$OUT/conv-test.svg" --config full
+svg_to_png "$OUT/conv-test.svg" "$OUT/conv-test.png" || die "SVG→PNG конвертация не удалась."
+signature="$(od -An -tx1 -N8 "$OUT/conv-test.png" | tr -d ' \n')"
+[ "$signature" = 89504e470d0a1a0a ] || die "Конвертированный PNG битый."
+rm -f -- "$OUT/conv-test.svg" "$OUT/conv-test.png"
+
 make_summary
 grep -Fq 'speed-test-fallback.png' "$OUT/summary.md" || die "Скриншот отсутствует в сводке."
 make_zip

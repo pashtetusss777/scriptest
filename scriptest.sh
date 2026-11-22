@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.0"
+VERSION="0.2.1"
 
 SELF_URL="https://raw.githubusercontent.com/pashtetusss777/scriptest/main/scriptest.sh"
 
@@ -206,25 +206,25 @@ install_deps() {
   case "$PKG" in
     apt)
       $SUDO apt-get update -y >/dev/null 2>&1
-      $SUDO apt-get install -y curl wget zip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 >/dev/null 2>&1
+      $SUDO apt-get install -y curl wget zip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 librsvg2-bin >/dev/null 2>&1
       ;;
     dnf)
       $SUDO dnf install -y epel-release >/dev/null 2>&1 || true
-      $SUDO dnf install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
+      $SUDO dnf install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute librsvg2-tools >/dev/null 2>&1
       ;;
     yum)
       $SUDO yum install -y epel-release >/dev/null 2>&1 || true
-      $SUDO yum install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
+      $SUDO yum install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute librsvg2-tools >/dev/null 2>&1
       ;;
     pacman)
       # sysbench в Arch только в AUR — ставим базу, sysbench пропустим
-      $SUDO pacman -Sy --noconfirm --needed curl wget zip jq bc gnu-netcat bind iproute2 >/dev/null 2>&1
+      $SUDO pacman -Sy --noconfirm --needed curl wget zip jq bc gnu-netcat bind iproute2 librsvg >/dev/null 2>&1
       ;;
     zypper)
-      $SUDO zypper --non-interactive install curl wget zip sysbench jq bc netcat-openbsd bind-utils iproute2 >/dev/null 2>&1
+      $SUDO zypper --non-interactive install curl wget zip sysbench jq bc netcat-openbsd bind-utils iproute2 librsvg2-tools >/dev/null 2>&1
       ;;
     apk)
-      $SUDO apk add curl wget zip sysbench jq bc netcat-openbsd bind-tools iproute2 >/dev/null 2>&1
+      $SUDO apk add curl wget zip sysbench jq bc netcat-openbsd bind-tools iproute2 librsvg >/dev/null 2>&1
       ;;
     "")
       warn "Пакетный менеджер не определён — зависимости не устанавливаю."
@@ -543,12 +543,28 @@ render_image() {
   timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 "$@" < "$input"
 }
 
+# SVG → PNG: у freeze на некоторых серверах не работает своя PNG-конвертация
+svg_to_png() {
+  local svg="$1" png="$2"
+  if command -v rsvg-convert >/dev/null 2>&1; then
+    rsvg-convert -o "$png" "$svg"
+  elif command -v inkscape >/dev/null 2>&1; then
+    inkscape --export-filename="$png" "$svg"
+  elif command -v magick >/dev/null 2>&1; then
+    magick "$svg" "$png"
+  elif command -v convert >/dev/null 2>&1; then
+    convert "$svg" "$png"
+  else
+    return 1
+  fi
+}
+
 render_pngs() {
   [ "$MAKE_PNG" -eq 1 ] || return 0
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
   info "Генерирую PNG-скриншоты..."
-  local name f image message
+  local name f image svg message converted
   local -a style=(--config full)
   if [ "$THEME" = light ]; then
     style=(--config base --theme monokailight --border.color '#d4d4d4' --border.width 1
@@ -558,17 +574,29 @@ render_pngs() {
     f="$OUT/$name"
     [ -s "$f" ] || continue
     image="${f%.txt}.png"
+    converted=""
     if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
       rm -f -- "$image"
       warn "PNG для ${f##*/} не создан${message:+: ${message%%$'\n'*}}. Пробую SVG."
-      image="${f%.txt}.svg"
-      if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
-        rm -f -- "$image"
+      svg="${f%.txt}.svg"
+      if ! message="$(render_image "$f" "$svg" "${style[@]}" 2>&1)" || [ ! -s "$svg" ]; then
+        rm -f -- "$svg"
         warn "SVG тоже не создан${message:+: ${message%%$'\n'*}}."
         continue
       fi
+      # freeze не дал PNG, но SVG есть — конвертируем на месте
+      if svg_to_png "$svg" "$image" && [ -s "$image" ]; then
+        rm -f -- "$svg"
+        converted=" (SVG сконвертирован в PNG)"
+      else
+        rm -f -- "$image"
+        warn "SVG→PNG не конвертировался (поставь librsvg2-bin). Оставляю SVG."
+        ok "Скриншот: ${svg##*/}"
+        REPORT_IMAGES+=("${svg##*/}")
+        continue
+      fi
     fi
-    ok "Скриншот: ${image##*/}"
+    ok "Скриншот: ${image##*/}$converted"
     REPORT_IMAGES+=("${image##*/}")
   done
   info "Скриншотов создано: ${#REPORT_IMAGES[@]}"
