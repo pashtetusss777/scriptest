@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.8"
+VERSION="0.2.9"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -39,6 +39,7 @@ ONLY=""                # список id через запятую
 SKIP=""                # список id через запятую
 OUT=""                 # рабочая папка (задаётся позже)
 OUT_CREATED=0
+MONO_FONT=""
 FREEZE_BIN=""
 FREEZE_DIR=""
 declare -a REPORT_LOGS=() REPORT_IMAGES=()
@@ -205,25 +206,25 @@ install_deps() {
   case "$PKG" in
     apt)
       $SUDO apt-get update -y >/dev/null 2>&1
-      $SUDO apt-get install -y curl wget zip unzip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 fontconfig >/dev/null 2>&1
+      $SUDO apt-get install -y curl wget zip unzip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 >/dev/null 2>&1
       ;;
     dnf)
       $SUDO dnf install -y epel-release >/dev/null 2>&1 || true
-      $SUDO dnf install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute fontconfig >/dev/null 2>&1
+      $SUDO dnf install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
       ;;
     yum)
       $SUDO yum install -y epel-release >/dev/null 2>&1 || true
-      $SUDO yum install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute fontconfig >/dev/null 2>&1
+      $SUDO yum install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
       ;;
     pacman)
       # sysbench в Arch только в AUR — ставим базу, sysbench пропустим
-      $SUDO pacman -Sy --noconfirm --needed curl wget zip unzip jq bc gnu-netcat bind iproute2 fontconfig >/dev/null 2>&1
+      $SUDO pacman -Sy --noconfirm --needed curl wget zip unzip jq bc gnu-netcat bind iproute2 >/dev/null 2>&1
       ;;
     zypper)
-      $SUDO zypper --non-interactive install curl wget zip unzip sysbench jq bc netcat-openbsd bind-utils iproute2 fontconfig >/dev/null 2>&1
+      $SUDO zypper --non-interactive install curl wget zip unzip sysbench jq bc netcat-openbsd bind-utils iproute2 >/dev/null 2>&1
       ;;
     apk)
-      $SUDO apk add curl wget zip unzip sysbench jq bc netcat-openbsd bind-tools iproute2 fontconfig >/dev/null 2>&1
+      $SUDO apk add curl wget zip unzip sysbench jq bc netcat-openbsd bind-tools iproute2 >/dev/null 2>&1
       ;;
     "")
       warn "Пакетный менеджер не определён — зависимости не устанавливаю."
@@ -277,24 +278,17 @@ ensure_freeze() {
 }
 
 # ----------------------------------------------------------------------------
-# Шрифт: без JetBrains Mono PNG рендерится пропорциональным системным шрифтом
+# Шрифт: используем уже установленный моноширинный, без скачивания
 # ----------------------------------------------------------------------------
-ensure_font() {
-  [ "$MAKE_PNG" -eq 1 ] || return 0
-  command -v fc-list >/dev/null 2>&1 && fc-list 2>/dev/null | grep -qi "jetbrains mono" && return 0
-  local fdir="/usr/local/share/fonts"
-  info "Ставлю шрифт JetBrains Mono для скриншотов..."
-  local tmp
-  tmp="$(mktemp -d)" || { warn "Нет временной папки для шрифта."; return 0; }
-  if curl -fsSL --max-time 120 "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip" -o "$tmp/jb.zip" \
-     && unzip -oq "$tmp/jb.zip" "fonts/ttf/JetBrainsMono-Regular.ttf" -d "$tmp" \
-     && { $SUDO mkdir -p "$fdir" && $SUDO install -m 0644 "$tmp/fonts/ttf/JetBrainsMono-Regular.ttf" "$fdir/"; } \
-     && { $SUDO fc-cache -f >/dev/null 2>&1 || fc-cache -f >/dev/null 2>&1 || true; }; then
-    ok "Шрифт установлен."
-  else
-    warn "Не удалось поставить шрифт — скриншоты могут отрисоваться системным шрифтом."
-  fi
-  rm -rf -- "$tmp"
+resolve_font() {
+  local f
+  for f in "DejaVu Sans Mono" "Liberation Mono" "Noto Sans Mono" "Consolas"; do
+    if command -v fc-list >/dev/null 2>&1 && fc-list 2>/dev/null | grep -qi "$f"; then
+      printf '%s\n' "$f"
+      return 0
+    fi
+  done
+  printf 'monospace\n'
 }
 
 # ----------------------------------------------------------------------------
@@ -582,7 +576,7 @@ render_image() {
   local input="$1" output="$2"
   shift 2
   # --language ansi: freeze рисует текст с сохранением ANSI-цветов из лога
-  timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 "$@" < "$input"
+  timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 --font.family "$MONO_FONT" "$@" < "$input"
 }
 
 install_svg_converter() {
@@ -878,12 +872,13 @@ main() {
   [ ${#SELECTED[@]} -gt 0 ] || die "Не выбран ни один тест."
   if (( ASK_BBR )); then offer_bbr; fi
   detect_pkg
+  MONO_FONT="$(resolve_font)"
+  info "Шрифт для скриншотов: $MONO_FONT"
   install_deps
   umask 077
   setup_workdir
   trap '[ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
   ensure_freeze
-  ensure_font
   render_pngs sysinfo.txt
 
   info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
