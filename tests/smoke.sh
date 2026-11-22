@@ -60,6 +60,7 @@ make_zip || exit 1
   die "Архив содержит неверный набор файлов."
 unzip -tq "$scratch/report-2.zip" || exit 1
 
+SUDO="" # Следующие проверки используют функцию sysctl, не системную команду через sudo.
 sysctl() {
   case "$*" in
     '-n net.ipv4.tcp_congestion_control') printf '%s\n' cubic ;;
