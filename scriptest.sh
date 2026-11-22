@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.0"
+VERSION="0.2.2"
 
 SELF_URL="https://raw.githubusercontent.com/pashtetusss777/scriptest/main/scriptest.sh"
 
@@ -779,6 +779,10 @@ case "$0" in
         die "Не удалось создать временный файл."
       curl -fsSL --max-time 60 "$SELF_URL" -o "$self_tmp" ||
         die "Не удалось скачать скрипт с $SELF_URL"
+      # stdin занят пайпом со скриптом — меню должно читать с терминала
+      if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        exec bash "$self_tmp" "$@" < /dev/tty
+      fi
       exec bash "$self_tmp" "$@"
     fi
     ;;
