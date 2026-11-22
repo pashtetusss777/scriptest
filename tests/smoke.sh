@@ -14,7 +14,8 @@ printf 'q\n' | timeout 10 script -qec 'cat scriptest.sh | bash' /dev/null > "$sc
 if setsid --wait bash < scriptest.sh > "$scratch/headless" 2>&1; then die "Меню запустилось без терминала."; fi
 grep -Fq 'Нет терминала.' "$scratch/headless" || die "Не обработано отсутствие терминала."
 OUT="$scratch/отчёт с пробелами"
-mkdir -p "$OUT/bin" || exit 1
+mkdir -p "$OUT" || exit 1
+OUT_CREATED=1
 SYSINFO_FILE="$OUT/sysinfo.txt"
 printf 'OS       : Linux\n' > "$SYSINFO_FILE"
 REPORT_LOGS=(sysinfo.txt)
@@ -33,6 +34,16 @@ grep -qF '38;2;' "$OUT/speed-test-fallback.txt" && die "Truecolor не вычи�
 if compgen -G "$OUT/.bench-*" >/dev/null; then die "Временные файлы теста не удалены."; fi
 
 ensure_freeze
+export REAL_FREEZE="$FREEZE_BIN"
+FREEZE_BIN="$scratch/freeze"
+cat > "$FREEZE_BIN" <<'SH'
+#!/usr/bin/env bash
+[[ "$3" == */sysinfo.png ]] && exit 1
+exec "$REAL_FREEZE" "$@"
+SH
+chmod +x "$FREEZE_BIN"
+detect_pkg
+setup_privileges
 render_pngs
 for id in sysinfo speed-test speed-test-fallback deadline; do
   signature="$(od -An -tx1 -N8 "$OUT/$id.png" | tr -d ' \n')"
@@ -41,9 +52,13 @@ done
 
 make_summary
 grep -Fq 'speed-test-fallback.png' "$OUT/summary.md" || die "Скриншот отсутствует в сводке."
-make_zip
-[ "$(unzip -Z1 "$OUT.zip" | wc -l)" -eq 9 ] || die "Архив содержит неверный набор файлов."
-unzip -tq "$OUT.zip" || exit 1
+echo previous > "$scratch/report.zip"
+make_zip || exit 1
+[ "$(cat "$scratch/report.zip")" = previous ] && [ ! -e "$OUT" ] ||
+  die "Старый архив изменён или временная папка осталась."
+[ "$(unzip -Z1 "$scratch/report-2.zip" | sort)" = "$(printf '%s\n' sysinfo.png speed-test.png speed-test-fallback.png deadline.png | sort)" ] ||
+  die "Архив содержит неверный набор файлов."
+unzip -tq "$scratch/report-2.zip" || exit 1
 
 sysctl() {
   case "$*" in

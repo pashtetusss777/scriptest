@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.4"
+VERSION="0.2.5"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -204,25 +204,25 @@ install_deps() {
   case "$PKG" in
     apt)
       $SUDO apt-get update -y >/dev/null 2>&1
-      $SUDO apt-get install -y curl wget zip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 >/dev/null 2>&1
+      $SUDO apt-get install -y curl wget zip unzip sysbench ca-certificates jq bc netcat-openbsd dnsutils iproute2 >/dev/null 2>&1
       ;;
     dnf)
       $SUDO dnf install -y epel-release >/dev/null 2>&1 || true
-      $SUDO dnf install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
+      $SUDO dnf install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
       ;;
     yum)
       $SUDO yum install -y epel-release >/dev/null 2>&1 || true
-      $SUDO yum install -y curl wget zip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
+      $SUDO yum install -y curl wget zip unzip sysbench jq bc nmap-ncat bind-utils iproute >/dev/null 2>&1
       ;;
     pacman)
       # sysbench в Arch только в AUR — ставим базу, sysbench пропустим
-      $SUDO pacman -Sy --noconfirm --needed curl wget zip jq bc gnu-netcat bind iproute2 >/dev/null 2>&1
+      $SUDO pacman -Sy --noconfirm --needed curl wget zip unzip jq bc gnu-netcat bind iproute2 >/dev/null 2>&1
       ;;
     zypper)
-      $SUDO zypper --non-interactive install curl wget zip sysbench jq bc netcat-openbsd bind-utils iproute2 >/dev/null 2>&1
+      $SUDO zypper --non-interactive install curl wget zip unzip sysbench jq bc netcat-openbsd bind-utils iproute2 >/dev/null 2>&1
       ;;
     apk)
-      $SUDO apk add curl wget zip sysbench jq bc netcat-openbsd bind-tools iproute2 >/dev/null 2>&1
+      $SUDO apk add curl wget zip unzip sysbench jq bc netcat-openbsd bind-tools iproute2 >/dev/null 2>&1
       ;;
     "")
       warn "Пакетный менеджер не определён — зависимости не устанавливаю."
@@ -541,12 +541,23 @@ render_image() {
   timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 "$@" < "$input"
 }
 
+install_svg_converter() {
+  case "${PKG:-}" in
+    apt) $SUDO apt-get install -y librsvg2-bin ;;
+    dnf|yum) $SUDO "$PKG" install -y librsvg2-tools ;;
+    pacman) $SUDO pacman -S --needed --noconfirm librsvg ;;
+    zypper) $SUDO zypper --non-interactive install rsvg-convert ;;
+    apk) $SUDO apk add librsvg ;;
+    *) return 1 ;;
+  esac
+}
+
 render_pngs() {
   [ "$MAKE_PNG" -eq 1 ] || return 0
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
   info "Генерирую PNG-скриншоты..."
-  local name f image message
+  local name f image svg message tried_install=0
   local -a style=(--config full)
   if [ "$THEME" = light ]; then
     style=(--config base --theme monokailight --border.color '#d4d4d4' --border.width 1
@@ -559,10 +570,21 @@ render_pngs() {
     if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
       rm -f -- "$image"
       warn "PNG для ${f##*/} не создан${message:+: ${message%%$'\n'*}}. Пробую SVG."
-      image="${f%.txt}.svg"
-      if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
-        rm -f -- "$image"
+      svg="${f%.txt}.svg"
+      if ! message="$(render_image "$f" "$svg" "${style[@]}" 2>&1)" || [ ! -s "$svg" ]; then
+        rm -f -- "$svg"
         warn "SVG тоже не создан${message:+: ${message%%$'\n'*}}."
+        continue
+      fi
+      if ! command -v rsvg-convert >/dev/null && (( ! tried_install )); then
+        tried_install=1
+        install_svg_converter || warn "Не удалось установить rsvg-convert."
+      fi
+      if timeout -k 5 60 rsvg-convert -o "$image" "$svg" && [ -s "$image" ]; then
+        rm -f -- "$svg"
+      else
+        rm -f -- "$image"
+        warn "Не удалось получить PNG. Исходник сохранён: $svg"
         continue
       fi
     fi
@@ -605,19 +627,33 @@ make_summary() {
 }
 
 make_zip() {
-  [ "$MAKE_ZIP" -eq 1 ] || return 0
-  command -v zip >/dev/null 2>&1 || { warn "zip не найден — архив не собран (файлы лежат в $OUT)."; return 0; }
-  local archive="$OUT.zip"
-  local -a files=(summary.md "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}")
-  if [ -e "$archive" ] || [ -L "$archive" ]; then
-    warn "Архив уже существует: $archive. Не перезаписываю."
+  if (( ! MAKE_ZIP || ${#REPORT_IMAGES[@]} == 0 )); then
+    info "Без архива. Файлы отчёта: $OUT"
     return 0
   fi
-  ( cd -- "$OUT" && zip -q "$archive" "${files[@]}" ) ||
-    { warn "Ошибка сборки архива. Отчёт остался в $OUT."; return 0; }
+  local dir="${OUT%/*}" archive="$OUT/.images.zip" name=report.zip n=1 file
+  # Сначала проверяем ZIP, затем публикуем без перезаписи даже при параллельных запусках.
+  ( cd -- "$OUT" && zip -q -T "$archive" "${REPORT_IMAGES[@]}" ) ||
+    { warn "Не удалось собрать и проверить ZIP. Отчёт остался в $OUT."; return 1; }
+  while ! ln -T -- "$archive" "$dir/$name" 2>/dev/null; do
+    if [[ ! -e "$dir/$name" && ! -L "$dir/$name" ]]; then
+      warn "Не удалось сохранить $dir/$name. Архив: $archive"; return 1
+    fi
+    n=$((n+1)); name="report-$n.zip"
+  done
+  rm -f -- "$archive"
+  archive="$dir/$name"
   ok "Архив: $archive"
   info "Скачай с компьютера (замени SERVER на адрес, по которому подключаешься по SSH):"
   printf '  scp %q .\n' "$(id -un)@SERVER:$archive"
+  if (( ${#REPORT_IMAGES[@]} == ${#REPORT_LOGS[@]} )); then
+    for file in summary.md "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}"; do
+      rm -f -- "$OUT/$file" || return 1
+    done
+    if (( OUT_CREATED )); then rmdir -- "$OUT" || warn "В $OUT остались файлы."; fi
+  else
+    warn "Не все PNG созданы. Исходники оставлены в $OUT."
+  fi
 }
 
 print_results() {
@@ -808,7 +844,6 @@ main() {
   render_pngs
   make_summary
   make_zip
-  info "Готово. Архив и файлы отчёта: $(dirname "$OUT")"
 }
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
