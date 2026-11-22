@@ -75,7 +75,7 @@ SH
 chmod +x "$FREEZE_BIN"
 detect_pkg
 setup_privileges
-render_pngs
+render_pngs sysinfo.txt speed-test.txt speed-test-fallback.txt deadline.txt
 for id in sysinfo speed-test speed-test-fallback deadline; do
   signature="$(od -An -tx1 -N8 "$OUT/$id.png" | tr -d ' \n')"
   [ "$signature" = 89504e470d0a1a0a ] || die "Не создан PNG для $id."
