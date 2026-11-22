@@ -92,23 +92,53 @@ make_zip || exit 1
   die "Архив содержит неверный набор файлов."
 unzip -tq "$scratch/report-2.zip" || exit 1
 
-SUDO="" # Следующие проверки используют функцию sysctl, не системную команду через sudo.
+SUDO="" # Следующие проверки используют функции-заглушки вместо системных команд.
+BBR_CONF="$scratch/bbr.conf"
+printf 'cubic\n'    > "$scratch/cc"
+printf 'fq_codel\n' > "$scratch/qdisc"
 sysctl() {
   case "$*" in
-    '-n net.ipv4.tcp_congestion_control') printf '%s\n' cubic ;;
-    '-n net.ipv4.tcp_available_congestion_control') printf '%s\n' 'reno cubic bbr' ;;
-    '-n net.ipv6.conf.default.disable_ipv6') printf '%s\n' 0 ;;
-    -w*) printf '%s\n' "$2" >> "$scratch/sysctl-writes" ;;
+    '-n net.ipv4.tcp_congestion_control')            cat "$scratch/cc" ;;
+    '-n net.core.default_qdisc')                     cat "$scratch/qdisc" ;;
+    '-n net.ipv4.tcp_available_congestion_control')  printf '%s\n' 'reno cubic bbr' ;;
+    '-n net.ipv6.conf.default.disable_ipv6')         printf '%s\n' 0 ;;
+    -p*)
+      while IFS='=' read -r k v; do
+        case "$k" in
+          net.ipv4.tcp_congestion_control) printf '%s\n' "$v" > "$scratch/cc" ;;
+          net.core.default_qdisc)          printf '%s\n' "$v" > "$scratch/qdisc" ;;
+        esac
+      done < "$2"
+      ;;
+    -w*)
+      printf '%s\n' "$2" >> "$scratch/sysctl-writes"
+      case "$2" in
+        net.ipv4.tcp_congestion_control=*) printf '%s\n' "${2#*=}" > "$scratch/cc" ;;
+        net.core.default_qdisc=*)          printf '%s\n' "${2#*=}" > "$scratch/qdisc" ;;
+      esac
+      ;;
     *) return 1 ;;
   esac
 }
+systemctl() { printf '%s\n' "$*" >> "$scratch/systemctl-calls"; }
+modprobe() { return 0; }
+ip() { return 0; }
+
 offer_bbr <<< n
-[ ! -e "$scratch/sysctl-writes" ] || die "BBR включён без согласия."
+[ ! -e "$BBR_CONF" ] || die "BBR включён без согласия."
 offer_bbr <<< y
+grep -qxF 'net.ipv4.tcp_congestion_control=bbr' "$BBR_CONF" || die "BBR не записан в sysctl.d."
+grep -qxF 'net.core.default_qdisc=cake' "$BBR_CONF" || die "Cake не записан в sysctl.d."
+[ "$(cat "$scratch/cc")" = bbr ] && [ "$(cat "$scratch/qdisc")" = cake ] ||
+  die "BBR/Cake не применились."
+grep -qxF 'restart systemd-sysctl' "$scratch/systemctl-calls" ||
+  die "systemd-sysctl не перезапущен."
+disable_bbr || die "BBR не выключился."
+[ ! -e "$BBR_CONF" ] || die "Конфиг BBR не удалён."
+[ "$(cat "$scratch/cc")" = cubic ] && [ "$(cat "$scratch/qdisc")" = fq_codel ] ||
+  die "Прежние настройки TCP не вернулись."
 if SSH_CONNECTION='2001:db8::1 999 2001:db8::2 22' disable_ipv6 <<< y; then
   die "IPv6 отключён внутри IPv6 SSH-сессии."
 fi
-[ "$(cat "$scratch/sysctl-writes")" = 'net.ipv4.tcp_congestion_control=bbr' ] ||
-  die "Неожиданные сетевые настройки."
 SSH_CONNECTION='192.0.2.1 999 192.0.2.2 22' disable_ipv6 <<< y || die "IPv6 не отключён."
 grep -qxF 'net.ipv6.conf.all.disable_ipv6=1' "$scratch/sysctl-writes" || die "Не изменены текущие интерфейсы."
