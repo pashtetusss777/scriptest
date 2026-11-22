@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.2"
+VERSION="0.2.3"
 
 SELF_URL="https://raw.githubusercontent.com/pashtetusss777/scriptest/main/scriptest.sh"
 
@@ -777,7 +777,8 @@ case "$0" in
       info "Скрипт пришёл по пайпу — скачиваю его во временный файл и перезапускаюсь..."
       self_tmp="$(mktemp "${TMPDIR:-/tmp}/scriptest-XXXXXX.sh")" ||
         die "Не удалось создать временный файл."
-      curl -fsSL --max-time 60 "$SELF_URL" -o "$self_tmp" ||
+      # raw.githubusercontent кэшируется на CDN — рвём кэш меткой времени
+      curl -fsSL --max-time 60 "$SELF_URL?nocache=$(date +%s)" -o "$self_tmp" ||
         die "Не удалось скачать скрипт с $SELF_URL"
       # stdin занят пайпом со скриптом — меню должно читать с терминала
       if [ -r /dev/tty ] && [ -w /dev/tty ]; then
