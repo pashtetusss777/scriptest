@@ -270,11 +270,9 @@ enable_bbr() {
 }
 
 disable_bbr() {
-  local cc qdisc avail ifc
+  local cc qdisc avail ifc now_cc now_qd
   cc="$(bbr_previous cc cubic)"
   qdisc="$(bbr_previous qdisc fq_codel)"
-  [[ "$cc" == bbr ]] && cc="cubic"
-  [[ "$qdisc" == cake ]] && qdisc="fq_codel"
 
   # Если запомненного алгоритма нет в ядре, берём первый доступный.
   avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
@@ -294,11 +292,13 @@ disable_bbr() {
     $SUDO tc qdisc replace dev "$ifc" root "$qdisc" >/dev/null 2>&1 || true
   fi
 
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" != bbr ]; then
-    ok "BBR выключен, вернул $cc / $qdisc."
+  now_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+  now_qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+  if [ "$now_cc" = "$cc" ] && [ "$now_qd" = "$qdisc" ]; then
+    ok "Вернул прежние настройки TCP: $cc / $qdisc."
     return 0
   fi
-  warn "Не удалось вернуть алгоритм TCP — проверь права."
+  warn "Не удалось вернуть настройки TCP (сейчас $now_cc / $now_qd)."
   return 1
 }
 
