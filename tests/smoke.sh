@@ -63,6 +63,14 @@ grep -qF $'\033[32mGREEN\033[0m' "$OUT/speed-test-fallback.txt" ||
   die "Базовый цвет не сохранился."
 grep -q '^TRUE' "$OUT/speed-test-fallback.txt" || die "Текст после truecolor потерялся."
 grep -qF '38;2;' "$OUT/speed-test-fallback.txt" && die "Truecolor не вычищен из лога."
+printf 'BAD1\nBAD2\n\033[2K\033[1A\033[2K\033[1A\033[2KREPORT_OK\n' | sanitize_stream > "$scratch/sanitized.txt"
+grep -qF 'REPORT_OK' "$scratch/sanitized.txt" &&
+  ! grep -qF 'BAD' "$scratch/sanitized.txt" ||
+  die "Стёртый скриптом баннер остался в логе."
+printf 'old\rNEW\n' | sanitize_stream > "$scratch/sanitized.txt"
+grep -qF 'NEW' "$scratch/sanitized.txt" &&
+  ! grep -qF 'old' "$scratch/sanitized.txt" ||
+  die "Предыдущий CR-кадр остался в логе."
 if compgen -G "$OUT/.bench-*" >/dev/null; then die "Временные файлы теста не удалены."; fi
 
 ensure_freeze

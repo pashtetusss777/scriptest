@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.2"
+VERSION="0.3.4"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -101,7 +101,7 @@ declare -a REPORT_LOGS=() REPORT_IMAGES=()
 # ----------------------------------------------------------------------------
 TESTS=(
   "sysbench|sysbench — тест процессора|180"
-  "ipcheck|IP Check Place — блокировки IP зарубежными сервисами|240"
+  "ipcheck|IP Check Place — блокировки IP зарубежными сервисами|360"
   "ipregion|IP Region — регион по IP|120"
   "dpi|CensorCheck — блок по DPI (серверы РФ)|360"
   "insta|Instagram — проверка аудио|300"
@@ -547,39 +547,53 @@ TESTS_ELAPSED=0
 # подчёркивание). Truecolor (38;2), фоны (48), курсорные CSI и OSC выбрасываем:
 # freeze на них падает, а полная зачистка C0-символов спасает PNG-конвертацию.
 sanitize_stream() {
-  # C0-символы (кроме \n, \t и ESC=033) убирает tr — у mawk нет надёжных
-  # восьмеричных escape в регулярках
+  # C0-символы (кроме \n, \t и ESC=033) убирает tr: не полагаемся на то,
+  # понимает ли awk \r, \010 и прочие escape в регулярках (у mawk с этим беда).
   tr -d '\000-\006\013\014\016-\032\034-\037\177' |
   awk '
-  BEGIN { esc = sprintf("%c", 27) }
-  {
-    line = $0; out = ""
-    # CRLF завершает строку; внутренний CR начинает следующий кадр на той же строке.
-    sub(/\r$/, "", line); sub(/^.*\r/, "", line)
-    # Спиннеры часто стирают предыдущий символ через backspace.
-    while (match(line, /[^\010]\010/)) {
-      pos = RSTART
-      # mawk работает с байтами: захватываем весь предыдущий UTF-8 символ.
-      while (pos > 1) { byte = substr(line, pos, 1)
-        if (byte < "\200" || byte > "\277") break
-        pos--
-      }
-      line = substr(line,1,pos-1) substr(line,RSTART+2)
+  BEGIN {
+    esc = sprintf("%c", 27); cr = sprintf("%c", 13); bs = sprintf("%c", 8)
+    nb = 0; cur = ""
+  }
+  # Текст в текущую строку; backspace удаляет предыдущий символ (с учётом UTF-8).
+  function put(s,   p, pre, i, b) {
+    while ((p = index(s, bs)) > 0) {
+      pre = substr(s, 1, p - 1)
+      i = length(pre)
+      while (i > 0) { b = substr(pre, i, 1); if (b < "\200" || b > "\277") break; i-- }
+      if (i > 0) i--
+      s = substr(pre, 1, i) substr(s, p + 1)
     }
-    gsub(/\010/, "", line)
-    while (1) {
-      c1 = index(line, esc "["); c2 = index(line, esc "]")
-      if (!c1 && !c2) break
-      if (c1 && (!c2 || c1 < c2)) {
-        out = out substr(line, 1, c1 - 1)
-        rest = substr(line, c1 + 2)
-        match(rest, /^[0-9;:?<=>]*/)
-        params = substr(rest, 1, RLENGTH)
-        tail = substr(rest, RLENGTH + 1)
-        final = substr(tail, 1, 1)
+    cur = cur s
+  }
+  # Скрипты рисуют баннеры/прогресс, а затем стирают их курсором вверх.
+  # Без этого реклама IPQuality остаётся в логе и портит скриншот.
+  function cursor_up(n) {
+    while (n-- > 0) {
+      if (cur != "") cur = ""
+      else if (nb > 0) nb--
+    }
+  }
+  {
+    line = $0
+    # CRLF завершает строку; внутренний CR начинает следующий кадр на той же строке.
+    if (substr(line, length(line), 1) == cr) line = substr(line, 1, length(line) - 1)
+    while ((p = index(line, cr)) > 0) { cur = ""; line = substr(line, p + 1) }
+    while (line != "") {
+      e = index(line, esc)
+      if (!e) { put(line); break }
+      if (e > 1) put(substr(line, 1, e - 1))
+      rest = substr(line, e + 1)
+      kind = substr(rest, 1, 1)
+      if (kind == "[") {
+        body = substr(rest, 2); L = length(body); k = 1
+        while (k <= L) { ch = substr(body, k, 1); if (ch >= "@" && ch <= "~") break; k++ }
+        if (k > L) break
+        params = substr(body, 1, k - 1); final = substr(body, k, 1)
+        line = substr(body, k + 1)
         if (final == "m") {
           if (params == "" || params == "0") {
-            out = out esc "[0m"
+            put(esc "[0m")
           } else {
             n = split(params, p, ";"); res = ""; k = 1
             while (k <= n) {
@@ -596,28 +610,30 @@ sanitize_stream() {
               k++
             }
             sub(/;$/, "", res)
-            if (res != "") out = out esc "[" res "m"
+            if (res != "") put(esc "[" res "m")
           }
-          line = substr(tail, 2)
-        } else if (final ~ /[@-~]/) {
-          line = substr(tail, 2)   # не-SGR CSI: курсоры, режимы — выбрасываем
-        } else {
-          line = tail              # обрывок последовательности — теряем ESC[
+        } else if (final == "A") {
+          cursor_up(params == "" ? 1 : params + 0)
+        } else if (final == "K") {
+          cur = ""
         }
-        continue
+        # прочие CSI (курсоры, режимы, очистка экрана) выбрасываем
+      } else if (kind == "]") {
+        # OSC (заголовок окна и т.п.): глотаем до BEL или ESC-\
+        rest = substr(rest, 2)
+        bel = index(rest, "\007"); st = index(rest, esc "\\")
+        if (bel && (!st || bel < st)) line = substr(rest, bel + 1)
+        else if (st) line = substr(rest, st + 2)
+        else line = ""
+      } else {
+        line = rest
       }
-      # OSC (заголовок окна и т.п.): глотаем до BEL или ESC-\
-      out = out substr(line, 1, c2 - 1)
-      rest = substr(line, c2 + 2)
-      bel = index(rest, "\007"); st = index(rest, esc "\\")
-      if (bel && (!st || bel < st)) rest = substr(rest, bel + 1)
-      else if (st) rest = substr(rest, st + 2)
-      else rest = ""
-      line = rest
     }
-    line = out line
-    gsub(/\007/, "", line); print line
-    fflush()
+    buf[++nb] = cur
+    cur = ""
+  }
+  END {
+    for (i = 1; i <= nb; i++) { gsub(/\007/, "", buf[i]); print buf[i] }
   }'
 }
 
