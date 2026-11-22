@@ -357,7 +357,9 @@ sanitize_stream() {
   awk '
   BEGIN { esc = sprintf("%c", 27) }
   {
-    line = $0; out = ""
+    # Управляющие символы C0, кроме \n, \t и самого ESC (033), — сразу в мусор
+    gsub(/[\r\000-\010\013\014\016-\032\034-\037\177]/, "", line)
+    out = ""
     while (1) {
       c1 = index(line, esc "["); c2 = index(line, esc "]")
       if (!c1 && !c2) break
@@ -407,7 +409,6 @@ sanitize_stream() {
       line = rest
     }
     line = out line
-    gsub(/[\r\000-\010\013\014\016-\037\177]/, "", line)
     print line
     fflush()
   }'
