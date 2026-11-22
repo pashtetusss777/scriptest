@@ -43,6 +43,7 @@ bash scriptest.sh
 | 6 | speed-ru | Скорость к российским провайдерам (bench.gig.ovh → bench.tlab.pw) |
 | 7 | speed-world | Скорость к зарубежным провайдерам (bench.sh → speed.tlab.pw) |
 | 8 | yabs | Диск, сеть iperf3, GeekBench ([YABS](https://yabs.sh)) |
+| 9 | geocheck | [GeoCheck](https://geocheck.ing) — только по номеру в меню или через `--only geocheck`. В полный прогон не входит. |
 
 ## Поддерживаемые ОС
 

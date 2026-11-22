@@ -3,6 +3,16 @@
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." || exit 1
 source ./scriptest.sh
 
+(
+  for ONLY in '' __all__; do
+    select_tests
+    [[ " ${SELECTED[*]} " != *' geocheck '* ]] || exit 1
+  done
+  ONLY=geocheck
+  select_tests
+  [[ "${SELECTED[*]}" == geocheck ]]
+) || die "GeoCheck должен запускаться только по выбору."
+
 scratch="$(mktemp -d)" || exit 1
 trap 'rm -rf -- "$scratch"' EXIT
 export TMPDIR="$scratch"

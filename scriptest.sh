@@ -55,6 +55,7 @@ TESTS=(
   "speed-ru|bench.gig.ovh — скорость к РФ-провайдерам|1500"
   "speed-world|bench.sh — скорость к зарубежным провайдерам|1500"
   "yabs|YABS — диск, сеть iperf3, GeekBench|1800"
+  "geocheck|GeoCheck — геолокация IP (только по выбору)|300"
 )
 
 # test_field <id> title|tmo — достать поле теста из TESTS
@@ -506,6 +507,7 @@ run_test_by_id() {
     speed-ru)    run_speed "$id" "$title" "$tmo" "wget -qO- bench.gig.ovh | bash" "wget -qO- bench.tlab.pw | bash" ;;
     speed-world) run_speed "$id" "$title" "$tmo" "wget -qO- bench.sh | bash" "wget -qO- speed.tlab.pw | bash" ;;
     yabs)        run_yabs ;;
+    geocheck)    run_test "$id" "$title" "$tmo" "curl -fsSL https://geocheck.ing | sh" ;;
     sysbench)    run_sysbench ;;
     *) warn "Неизвестный тест: $id" ;;
   esac
@@ -516,6 +518,7 @@ select_tests() {
   local -a ids=()
   local t id
   for t in "${TESTS[@]}"; do
+    [[ "${t%%|*}" == geocheck ]] && continue
     ids+=("${t%%|*}")
   done
 
