@@ -8,9 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.3"
-
-SELF_URL="https://raw.githubusercontent.com/pashtetusss777/scriptest/main/scriptest.sh"
+VERSION="0.2.4"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -769,31 +767,10 @@ confirm_all() {
 # main
 # ----------------------------------------------------------------------------
 
-# Запуск через «curl … | bash»: stdin занят скриптом, меню не сможет читать ввод.
-# Скачиваем скрипт во временный файл и перезапускаемся — тогда stdin остаётся терминалом.
-case "$0" in
-  bash|sh|*/bash|*/sh|/dev/*|/proc/self/fd/*)
-    if [ ! -t 0 ] && [ -t 1 ]; then
-      info "Скрипт пришёл по пайпу — скачиваю его во временный файл и перезапускаюсь..."
-      self_tmp="$(mktemp "${TMPDIR:-/tmp}/scriptest-XXXXXX.sh")" ||
-        die "Не удалось создать временный файл."
-      # raw.githubusercontent кэшируется на CDN — рвём кэш меткой времени
-      curl -fsSL --max-time 60 "$SELF_URL?nocache=$(date +%s)" -o "$self_tmp" ||
-        die "Не удалось скачать скрипт с $SELF_URL"
-      # stdin занят пайпом со скриптом — меню должно читать с терминала
-      if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        exec bash "$self_tmp" "$@" < /dev/tty
-      fi
-      exec bash "$self_tmp" "$@"
-    fi
-    ;;
-esac
-
 main() {
   parse_flags "$@"
   case "$THEME" in light|dark) ;; *) die "Тема должна быть light или dark." ;; esac
 
-  clear_screen
   info "scriptest v$VERSION"
   # apt/dnf не должны задавать вопросов из дочерних скриптов
   export DEBIAN_FRONTEND=noninteractive
@@ -803,6 +780,10 @@ main() {
     select_tests
     if [ "$ONLY" = "__all__" ] && [ -t 0 ]; then ASK_BBR=1; fi
   else
+    # При curl | bash stdin содержит код. Все интерактивные вопросы читаем из терминала.
+    if [ ! -t 0 ]; then
+      { exec </dev/tty; } 2>/dev/null || die "Нет терминала. Укажи --all или --only <id>."
+    fi
     SELECTED=()
     menu || die "Нет ввода. Укажи --all или --only <id>."
   fi

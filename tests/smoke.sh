@@ -6,6 +6,13 @@ source ./scriptest.sh
 scratch="$(mktemp -d)" || exit 1
 trap 'rm -rf -- "$scratch"' EXIT
 export TMPDIR="$scratch"
+# stdin несёт код, а ответ q приходит через отдельный управляющий терминал.
+printf 'q\n' | timeout 10 script -qec 'cat scriptest.sh | bash' /dev/null > "$scratch/menu" ||
+  die "Не удалось выйти из меню при запуске через пайп."
+[ "$(grep -c 'Доступные тесты' "$scratch/menu")" = 1 ] && grep -Fq 'Выход.' "$scratch/menu" ||
+  die "Меню не приняло ввод или перерисовалось."
+if setsid --wait bash < scriptest.sh > "$scratch/headless" 2>&1; then die "Меню запустилось без терминала."; fi
+grep -Fq 'Нет терминала.' "$scratch/headless" || die "Не обработано отсутствие терминала."
 OUT="$scratch/отчёт с пробелами"
 mkdir -p "$OUT/bin" || exit 1
 SYSINFO_FILE="$OUT/sysinfo.txt"

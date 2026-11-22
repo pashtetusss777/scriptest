@@ -50,7 +50,7 @@ Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS, Fedora, RHEL, Arch, openSUSE, Al
 
 Скрипт сам определяет дистрибутив, ставит недостающие зависимости (`curl`, `wget`, `zip`, `sysbench`) и скачивает бинарник `freeze`.
 
-Запускать можно и так, и так — в пайпе скрипт сам скачает себя во временный файл:
+При запуске через пайп меню читает выбор из SSH-терминала без повторной загрузки. Без терминала передай аргументы, например `| bash -s -- --only sysbench`.
 
 ```bash
 curl -sL https://raw.githubusercontent.com/pashtetusss777/scriptest/main/scriptest.sh | bash
