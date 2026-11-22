@@ -1,0 +1,15 @@
+name: Linux smoke test
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scriptest.sh
+      - run: bash tests/smoke.sh

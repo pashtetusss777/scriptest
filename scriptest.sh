@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.5"
+VERSION="0.1.6"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -24,7 +24,9 @@ ok()    { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} ${C_OK}OK${C_RESET} $*";
 err()   { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} ${C_ERR}ERROR${C_RESET} $*" >&2; }
 warn()  { printf '%s\n' "${C_BOLD}[scriptest]${C_RESET} ${C_INFO}WARN${C_RESET} $*"; }
 die()   { err "$*"; exit 1; }
-clear_screen() { printf '\033[H\033[2J\033[3J'; }
+clear_screen() {
+  if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ]; then printf '\033[2J\033[H'; fi
+}
 
 # ----------------------------------------------------------------------------
 # Настройки по умолчанию (меняются флагами)
@@ -36,7 +38,7 @@ ONLY=""                # список id через запятую
 SKIP=""                # список id через запятую
 OUT=""                 # рабочая папка (задаётся позже)
 FREEZE_BIN=""
-THEME_FILE=""
+FREEZE_DIR=""
 
 # ----------------------------------------------------------------------------
 # Тесты: id|name — description|timeout
@@ -83,7 +85,7 @@ scriptest v$VERSION — мульти-тест VPS / VDS / Dedicated
   -s, --skip <ids>       пропустить указанные тесты
   -l, --list             показать список тестов и выйти
   -t, --theme <name>     тема скриншотов: light (инь-ян, белый фон) | dark (по умолчанию: light)
-      --no-png           не генерировать PNG-скриншоты
+      --no-png           не генерировать скриншоты
       --no-zip           не собирать zip-архив
       --workdir <dir>    рабочая папка для результатов
   -h, --help             эта справка
@@ -191,7 +193,7 @@ install_deps() {
 }
 
 # ----------------------------------------------------------------------------
-# freeze: скачивание бинарника и темы
+# freeze: скачивание бинарника
 # ----------------------------------------------------------------------------
 ensure_freeze() {
   [ "$MAKE_PNG" -eq 1 ] || return 0
@@ -207,93 +209,36 @@ ensure_freeze() {
     esac
     case "$arch" in
       x86_64)          arch="x86_64" ;;
-      aarch64|arm64)   arch="aarch64" ;;
+      aarch64|arm64)   arch="arm64" ;;
       armv7*|armv8*)   arch="arm" ;;
       *) warn "freeze недоступен для $arch — PNG не будут сгенерированы."; MAKE_PNG=0; return 0 ;;
     esac
 
     info "Скачиваю freeze ($os/$arch)..."
-    api="$(curl -fsSL https://api.github.com/repos/charmbracelet/freeze/releases/latest 2>/dev/null)" || api=""
-    url="$(printf '%s' "$api" | grep -o "https://[^\"]*freeze_[0-9.]*_${os}_${arch}\\.tar\\.gz" | head -n1)"
+    api="$(curl -fsSL --max-time 20 https://api.github.com/repos/charmbracelet/freeze/releases/latest)" || api=""
+    url="$(printf '%s' "$api" |
+      grep -oE "https://github\\.com/charmbracelet/freeze/releases/download/[^\"/]+/freeze_[0-9.]+_${os}_${arch}\\.tar\\.gz\"" |
+      head -n1)"
+    url="${url%\"}"
     if [ -z "$url" ]; then
       warn "Не удалось получить ссылку на freeze — PNG не будут сгенерированы."
       MAKE_PNG=0; return 0
     fi
-    bin_dir="$OUT/bin"
-    mkdir -p "$bin_dir"
-    curl -fsSL "$url" -o "$bin_dir/freeze.tar.gz" || { warn "Ошибка скачивания freeze."; MAKE_PNG=0; return 0; }
-    tar -xzf "$bin_dir/freeze.tar.gz" -C "$bin_dir" freeze 2>/dev/null \
-      || tar -xzf "$bin_dir/freeze.tar.gz" -C "$bin_dir" || { warn "Ошибка распаковки freeze."; MAKE_PNG=0; return 0; }
-    chmod +x "$bin_dir/freeze"
-    FREEZE_BIN="$bin_dir/freeze"
+    FREEZE_DIR="$(mktemp -d)" || { warn "Нет временной папки для freeze."; MAKE_PNG=0; return 0; }
+    trap 'rm -rf -- "$FREEZE_DIR"' EXIT
+    bin_dir="${url##*/}"
+    bin_dir="${bin_dir%.tar.gz}"
+    curl -fsSL --max-time 120 "$url" -o "$FREEZE_DIR/freeze.tar.gz" ||
+      { warn "Ошибка скачивания freeze."; MAKE_PNG=0; return 0; }
+    tar -xzf "$FREEZE_DIR/freeze.tar.gz" -C "$FREEZE_DIR" "$bin_dir/freeze" ||
+      { warn "Ошибка распаковки freeze."; MAKE_PNG=0; return 0; }
+    FREEZE_BIN="$FREEZE_DIR/$bin_dir/freeze"
+  fi
+  if ! "$FREEZE_BIN" --version >/dev/null; then
+    warn "freeze не запускается на этой системе — скриншоты не будут сгенерированы."
+    MAKE_PNG=0; return 0
   fi
   ok "freeze: $FREEZE_BIN"
-}
-
-write_theme() {
-  [ "$MAKE_PNG" -eq 1 ] || return 0
-  THEME_FILE="$OUT/theme-$THEME.json"
-  if [ "$THEME" = "dark" ]; then
-    # Тёмная тема: чёрный фон, белые оттенки
-    cat > "$THEME_FILE" <<'EOF'
-{
-  "name": "scriptest-yinyang-dark",
-  "styles": {
-    "Background": "#0a0a0a",
-    "Text": "#f2f2f2",
-    "Comment": "#8a8a8a",
-    "Keyword": "#ffffff",
-    "String": "#d4d4d4",
-    "Number": "#ffffff",
-    "Literal": "#ffffff",
-    "Name": "#e0e0e0",
-    "Function": "#ffffff",
-    "Operator": "#cccccc",
-    "Punctuation": "#cccccc",
-    "PunctuationBracket": "#aaaaaa",
-    "PunctuationMarker": "#888888",
-    "Heading": "#ffffff",
-    "Error": "#ffffff",
-    "GenericHeading": "#ffffff",
-    "GenericSubheading": "#ffffff",
-    "GenericDeleted": "#777777",
-    "GenericInserted": "#f2f2f2",
-    "GenericEmph": "#ffffff",
-    "GenericStrong": "#ffffff"
-  }
-}
-EOF
-  else
-    # Светлая тема "инь-ян": белый фон, чёрный и оттенки серого
-    cat > "$THEME_FILE" <<'EOF'
-{
-  "name": "scriptest-yinyang",
-  "styles": {
-    "Background": "#ffffff",
-    "Text": "#171717",
-    "Comment": "#8f8f8f",
-    "Keyword": "#000000",
-    "String": "#3d3d3d",
-    "Number": "#000000",
-    "Literal": "#000000",
-    "Name": "#262626",
-    "Function": "#000000",
-    "Operator": "#404040",
-    "Punctuation": "#404040",
-    "PunctuationBracket": "#737373",
-    "PunctuationMarker": "#999999",
-    "Heading": "#000000",
-    "Error": "#000000",
-    "GenericHeading": "#000000",
-    "GenericSubheading": "#000000",
-    "GenericDeleted": "#a3a3a3",
-    "GenericInserted": "#171717",
-    "GenericEmph": "#000000",
-    "GenericStrong": "#000000"
-  }
-}
-EOF
-  fi
 }
 
 # ----------------------------------------------------------------------------
@@ -303,9 +248,14 @@ SYSINFO_FILE=""
 
 setup_workdir() {
   if [ -z "$OUT" ]; then
-    OUT="$PWD/scriptest-$(hostname 2>/dev/null || echo server)-$(date +%Y%m%d-%H%M%S)"
+    OUT="$(mktemp -d "$PWD/scriptest-$(date +%Y%m%d-%H%M%S)-XXXXXX")" ||
+      die "Не удалось создать папку отчёта."
+  else
+    mkdir -p -- "$OUT" || die "Не удалось создать папку: $OUT"
+    OUT="$(cd -- "$OUT" && pwd -P)" || die "Не удалось открыть папку отчёта."
+    (shopt -s dotglob nullglob; files=("$OUT"/*); ((${#files[@]} == 0))) ||
+      die "Укажи пустую папку для отчёта: $OUT"
   fi
-  mkdir -p "$OUT"
   info "Результаты: $OUT"
 
   # sysinfo.txt — шапка для summary и скриншотов
@@ -346,13 +296,20 @@ setup_workdir() {
 # Запуск тестов
 # ----------------------------------------------------------------------------
 declare -a RESULTS=()
+TESTS_ELAPSED=0
 
-ANSI_STRIP_SED='s/\x1B\[[0-9;]*[A-Za-z]//g; s/\x1B\][^\x07]*\x07//g; s/\x1B[>=]//g'
+ANSI_STRIP_SED='s/\x1B\[[0-?]*[ -/]*[@-~]//g; s/\x1B\][^\x07\x1B]*(\x07|\x1B\\)//g; s/\x1B[>=]//g; s/\r$//'
+
+format_duration() {
+  local seconds="$1"
+  printf '%02d:%02d:%02d' "$((seconds / 3600))" "$((seconds / 60 % 60))" "$((seconds % 60))"
+}
 
 # run_test <id> <title> <timeout> <command>
 run_test() {
   local id="$1" title="$2" tmo="$3" cmd="$4"
-  local log="$OUT/$id.txt" rc=0
+  local log="$OUT/$id.txt" start duration status size rc
+  local -a codes
 
   {
     echo "================================================================"
@@ -360,34 +317,35 @@ run_test() {
     echo "================================================================"
     cat "$SYSINFO_FILE"
     echo "================================================================"
-  } > "$log"
+  } > "$log" || die "Не удалось записать $log"
+  size="$(wc -c < "$log")"
 
-  info ">> $title (таймаут ${tmo}s)"
-  set +e
+  info ">> $title (лимит $(format_duration "$tmo"))"
+  start=$SECONDS
   # stdin закрыт: дочерние скрипты не смогут «повиснуть» в ожидании ввода (apt-подтверждения и т.п.)
-  # sed -u — без буферизации, чтобы вывод появлялся на экран сразу
-  timeout --preserve-status --kill-after=15 "$tmo" bash -c "$cmd" 2>&1 </dev/null \
-    | tee -a "$log" | sed -u -E "$ANSI_STRIP_SED"
-  rc="${PIPESTATUS[0]}"
-  set -e
+  timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" 2>&1 </dev/null \
+    | sed -u -E "$ANSI_STRIP_SED" | tee -a "$log"
+  codes=("${PIPESTATUS[@]}")
+  duration="$(format_duration "$((SECONDS - start))")"
+  rc="${codes[0]}"
+  ((codes[1] == 0 && codes[2] == 0)) || die "Не удалось сохранить вывод в $log"
 
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-    warn "Тест '$id' прерван по таймауту."
-    echo "" >> "$log"; echo "[scriptest] TIMEOUT (${tmo}s)" >> "$log"
-    RESULTS+=("$id|TIMEOUT")
+    status="TIMEOUT"
+    warn "Тест '$id' прерван по таймауту ($duration)."
   elif [ "$rc" -ne 0 ]; then
-    warn "Тест '$id' завершился с ошибкой (код $rc)."
-    echo "" >> "$log"; echo "[scriptest] FAILED (exit $rc)" >> "$log"
-    RESULTS+=("$id|FAILED")
+    status="FAILED"
+    warn "Тест '$id' завершился с ошибкой (код $rc, $duration)."
+  elif [ "$(wc -c < "$log")" -eq "$size" ]; then
+    status="FAILED"
+    warn "Тест '$id' не выдал результатов ($duration)."
   else
-    ok "Тест '$id' завершён."
-    echo "" >> "$log"; echo "[scriptest] OK" >> "$log"
-    RESULTS+=("$id|OK")
+    status="OK"
+    ok "Тест '$id' завершён ($duration)."
   fi
-
-  # Чистим ANSI-последовательности для читаемого текстового лога
-  local clean="$OUT/$id.clean.txt"
-  sed -E "$ANSI_STRIP_SED" "$log" > "$clean" && mv "$clean" "$log"
+  printf '\n[scriptest] %s · %s · exit %s\n' "$status" "$duration" "$rc" >> "$log" ||
+    die "Не удалось дописать $log"
+  RESULTS+=("$id|$status|$duration")
 }
 
 # run_speed <id> <title> <timeout> <primary_cmd> <fallback_cmd>
@@ -395,20 +353,16 @@ run_speed() {
   local id="$1" title="$2" tmo="$3" primary="$4" fallback="$5"
   run_test "$id" "$title" "$tmo" "$primary"
 
-  local status="${RESULTS[-1]#*|}"
-  local lines; lines="$(wc -l < "$OUT/$id.txt")"
-  if [ "$status" != "OK" ] || [ "$lines" -lt 6 ]; then
+  if [[ "${RESULTS[-1]}" != "$id|OK|"* ]]; then
     warn "Первичный скрипт для '$id' не дал результата — пробую фоллбек."
-    # убираем последнюю запись, чтобы не дублировать
-    unset 'RESULTS[-1]'
-    run_test "$id" "$title" "$tmo" "$fallback"
+    run_test "$id-fallback" "Резервный тест — ${title#* — }" "$tmo" "$fallback"
   fi
 }
 
 run_sysbench() {
   if ! command -v sysbench >/dev/null 2>&1; then
     info ">> Sysbench пропущен (не установлен)."
-    RESULTS+=("sysbench|SKIPPED")
+    RESULTS+=("sysbench|SKIPPED|—")
     return
   fi
   run_test "sysbench" "$(test_field sysbench title)" "$(test_field sysbench tmo)" "sysbench cpu run --threads=1"
@@ -462,32 +416,35 @@ select_tests() {
 # ----------------------------------------------------------------------------
 # Скриншоты
 # ----------------------------------------------------------------------------
+render_image() {
+  timeout -k 5 60 "$FREEZE_BIN" - --output "$2" --config base --theme "$3" --language text \
+    --border.color "$4" --border.width 1 --border.radius 8 --font.size 14 --padding 20,28 --wrap 120 < "$1"
+}
+
 render_pngs() {
   [ "$MAKE_PNG" -eq 1 ] || return 0
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
   info "Генерирую PNG-скриншоты..."
-  local f id png
+  local f image message count=0 palette=monokailight border='#d4d4d4'
+  if [ "$THEME" = dark ]; then palette=native; border='#525252'; fi
   for f in "$OUT"/*.txt; do
-    [ -e "$f" ] || return 0
-    id="$(basename "${f%.txt}")"
-    png="$OUT/$id.png"
-    if "$FREEZE_BIN" "$f" \
-        -o "$png" \
-        -c full \
-        --theme "$THEME_FILE" \
-        --font.family "JetBrains Mono" \
-        --font.size 13 \
-        --line-height 1.3 \
-        --padding 24,40 \
-        --margin 24 \
-        --background "#ffffff" >/dev/null 2>&1 \
-       || "$FREEZE_BIN" "$f" -o "$png" -c full --theme "$THEME_FILE" >/dev/null 2>&1; then
-      ok "PNG: $(basename "$png")"
-    else
-      warn "Не удалось создать PNG для $id"
+    [ -s "$f" ] || continue
+    image="${f%.txt}.png"
+    if ! message="$(render_image "$f" "$image" "$palette" "$border" 2>&1)" || [ ! -s "$image" ]; then
+      rm -f -- "$image"
+      warn "PNG для ${f##*/} не создан${message:+: ${message%%$'\n'*}}. Пробую SVG."
+      image="${f%.txt}.svg"
+      if ! message="$(render_image "$f" "$image" "$palette" "$border" 2>&1)" || [ ! -s "$image" ]; then
+        rm -f -- "$image"
+        warn "SVG тоже не создан${message:+: ${message%%$'\n'*}}."
+        continue
+      fi
     fi
+    ok "Скриншот: ${image##*/}"
+    count=$((count + 1))
   done
+  info "Скриншотов создано: $count"
 }
 
 # ----------------------------------------------------------------------------
@@ -502,47 +459,54 @@ make_summary() {
     cat "$SYSINFO_FILE"
     echo '```'
     echo
-    echo "## Тесты"
+    echo "## Тесты (общее время: $(format_duration "$TESTS_ELAPSED"))"
     echo
-    echo "| Тест | Статус |"
-    echo "|------|--------|"
-    local r
+    echo "| Тест | Статус | Время |"
+    echo "|------|--------|-------|"
+    local r id status duration
     for r in "${RESULTS[@]}"; do
-      echo "| ${r%%|*} | ${r#*|} |"
+      IFS='|' read -r id status duration <<< "$r"
+      printf '| %s | %s | %s |\n' "$id" "$status" "$duration"
     done
     echo
     echo "## Файлы"
     echo
     local f
-    for f in "$OUT"/*; do
-      echo "- \`$(basename "$f")\`"
+    for f in "$OUT"/*.txt "$OUT"/*.png "$OUT"/*.svg; do
+      [ -f "$f" ] || continue
+      printf -- '- `%s`\n' "${f##*/}"
     done
-  } > "$md"
+  } > "$md" || die "Не удалось создать $md"
   ok "Summary: $md"
 }
 
 make_zip() {
   [ "$MAKE_ZIP" -eq 1 ] || return 0
   command -v zip >/dev/null 2>&1 || { warn "zip не найден — архив не собран (файлы лежат в $OUT)."; return 0; }
-  local zipname
-  zipname="$(basename "$OUT").zip"
-  ( cd "$OUT" && zip -qr "../$zipname" . ) || { warn "Ошибка сборки архива."; return 0; }
-  ok "Архив: $(dirname "$OUT")/$zipname"
-  info "Скачать на локальную машину:"
-  info "  scp user@$(hostname -I 2>/dev/null | awk '{print $1}' || echo SERVER):\"$(dirname "$OUT")/$zipname\" ."
+  local archive="$OUT.zip"
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    warn "Архив уже существует: $archive. Не перезаписываю."
+    return 0
+  fi
+  ( cd -- "$OUT" && shopt -s nullglob && zip -q "$archive" summary.md *.txt *.png *.svg ) ||
+    { warn "Ошибка сборки архива. Отчёт остался в $OUT."; return 0; }
+  ok "Архив: $archive"
+  info "Скачай с компьютера (замени SERVER на адрес, по которому подключаешься по SSH):"
+  printf '  scp %q .\n' "$(id -un)@SERVER:$archive"
 }
 
 print_results() {
   info "Итоги:"
-  local r
+  local r id st duration
   for r in "${RESULTS[@]}"; do
-    local st="${r#*|}"
+    IFS='|' read -r id st duration <<< "$r"
     case "$st" in
-      OK)      ok   "  $(printf '%-12s' "${r%%|*}") $st" ;;
-      SKIPPED) warn "  $(printf '%-12s' "${r%%|*}") $st" ;;
-      *)       err  "  $(printf '%-12s' "${r%%|*}") $st" ;;
+      OK)      ok   "  $id · $st · $duration" ;;
+      SKIPPED) warn "  $id · $st" ;;
+      *)       warn "  $id · $st · $duration" ;;
     esac
   done
+  info "Общее время тестов: $(format_duration "$TESTS_ELAPSED")"
 }
 
 # ----------------------------------------------------------------------------
@@ -559,12 +523,11 @@ print_banner() {
   }
   cat <<'BANNER'
 
-  ███████╗ ██████╗██████╗ ██╗██████╗ ████████╗███████╗███████╗████████╗
-  ██╔════╝██╔════╝██╔══██╗██║██╔══██╗╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝
-  ███████╗██║     ██████╔╝██║██████╔╝   ██║   █████╗  ███████╗   ██║
-  ╚════██║██║     ██╔══██╗██║██╔═══╝    ██║   ██╔══╝  ╚════██║   ██║
-  ███████║╚██████╗██║  ██║██║██║       ██║   ███████║███████║   ██║
-  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═╝       ╚═╝   ╚══════╝╚══════╝   ╚═╝
+  █████  █████  ████   ███  ████   █████  █████  █████  █████
+  █      █      █   █   █   █   █    █    █      █        █
+  █████  █      ████    █   ████     █    ████   █████    █
+      █  █      █  █    █   █        █    █          █    █
+  █████  █████  █   █  ███  █        █    █████  █████    █
 
 BANNER
   printf '  %bscriptest %s%b %b· мульти-тест сервера%b\n' \
@@ -587,26 +550,25 @@ menu() {
       mins=$(( (tmo + 59) / 60 ))
       name="${title%% — *}"
       desc="${title#* — }"
-      printf '  %b%2d)%b %s %b— %s %b· ~%d мин%b\n' \
+      printf '  %b%2d)%b %s %b— %s · лимит %d мин%b\n' \
         "${C_OK}${C_BOLD}" "$i" "${C_RESET}" "${name}" \
-        "${C_DIM}" "${desc}" "${C_DIM}" "$mins" "${C_RESET}"
+        "${C_DIM}" "${desc}" "$mins" "${C_RESET}"
       i=$((i+1))
     done
     echo
-    printf '  %b a)%b %sЗапустить ВСЕ тесты%s %b· ~60 мин%b\n' \
-      "${C_OK}${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}" "${C_DIM}" "${C_RESET}"
+    printf '  %b a)%b %sЗапустить ВСЕ тесты%s\n' \
+      "${C_OK}${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
     printf '  %b q)%b Выход\n' "${C_BOLD}" "${C_RESET}"
     echo
     printf '  %b─────────────────────────────────────────────────%b\n' "${C_DIM}" "${C_RESET}"
     printf '  %b▸%b Номера через запятую (напр. 1,3,5) · a — все · q — выход: ' "${C_INFO}" "${C_RESET}"
     local choice
-    read -r choice
+    read -r choice || return 1
     case "$choice" in
       q|Q) clear_screen; info "Выход."; exit 0 ;;
       a|A)
         if confirm_all; then
-          SELECTED=()
-          local t; for t in "${TESTS[@]}"; do SELECTED+=("${t%%|*}"); done
+          select_tests
           return
         fi
         ;;
@@ -633,10 +595,10 @@ menu() {
 }
 
 confirm_all() {
-  printf '%s\n' "${C_INFO}${C_DIM}Внимание: полный тест гоняет трафик (speed-тесты, YABS ~15-20 мин).${C_RESET}"
+  printf '%s\n' "${C_INFO}${C_DIM}Сетевые тесты расходуют трафик. Лимиты указаны на одну попытку; резервные тесты запускаются отдельно.${C_RESET}"
   printf 'Запустить все тесты? [y/N]: '
   local ans
-  read -r ans
+  read -r ans || return 1
   case "$ans" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac
 }
 
@@ -645,42 +607,42 @@ confirm_all() {
 # ----------------------------------------------------------------------------
 main() {
   parse_flags "$@"
+  case "$THEME" in light|dark) ;; *) die "Тема должна быть light или dark." ;; esac
 
-  [ -t 1 ] && clear_screen
+  clear_screen
   info "scriptest v$VERSION"
   # apt/dnf не должны задавать вопросов из дочерних скриптов
   export DEBIAN_FRONTEND=noninteractive
   setup_privileges
   detect_pkg
   install_deps
+  umask 077
   setup_workdir
-  ensure_freeze
-  write_theme
 
-  if [ "$ONLY" = "__all__" ]; then
-    SELECTED=()
-    local t; for t in "${TESTS[@]}"; do SELECTED+=("${t%%|*}"); done
-  elif [ -n "$ONLY" ]; then
+  if [ -n "$ONLY" ]; then
     select_tests
   else
     SELECTED=()
-    menu
-    # select_tests уже мог заполнить SELECTED через меню
+    menu || die "Нет ввода. Укажи --all или --only <id>."
   fi
 
   [ ${#SELECTED[@]} -gt 0 ] || die "Не выбран ни один тест."
 
   info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
-  local id
+  local id start=$SECONDS
   for id in "${SELECTED[@]}"; do
     run_test_by_id "$id"
   done
+  TESTS_ELAPSED=$((SECONDS - start))
 
   print_results
-  make_summary
+  ensure_freeze
   render_pngs
+  make_summary
   make_zip
   info "Готово. Все файлы: $OUT"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
+fi
