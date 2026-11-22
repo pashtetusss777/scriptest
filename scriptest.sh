@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.7"
+VERSION="0.1.8"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -34,11 +34,16 @@ clear_screen() {
 THEME="dark"           # dark | light
 MAKE_PNG=1
 MAKE_ZIP=1
+MAKE_UPLOAD=1
+ASK_BBR=0
 ONLY=""                # список id через запятую
 SKIP=""                # список id через запятую
 OUT=""                 # рабочая папка (задаётся позже)
+OUT_CREATED=0
+ZIP_PATH=""
 FREEZE_BIN=""
 FREEZE_DIR=""
+declare -a REPORT_LOGS=() REPORT_IMAGES=()
 
 # ----------------------------------------------------------------------------
 # Тесты: id|name — description|timeout
@@ -80,16 +85,19 @@ scriptest v$VERSION — мульти-тест VPS / VDS / Dedicated
   scriptest.sh [опции]
 
 Опции:
-  -a, --all              запустить все тесты без меню
+  -a, --all              запустить все тесты (в терминале спросит про BBR)
   -o, --only <ids>       только выбранные тесты (через запятую), например: --only sysbench,yabs
   -s, --skip <ids>       пропустить указанные тесты
   -l, --list             показать список тестов и выйти
   -t, --theme <name>     тема скриншотов: dark (по умолчанию) | light
       --no-png           не генерировать скриншоты
-      --no-zip           не собирать zip-архив
+      --no-zip           не собирать и не загружать ZIP
+      --no-upload        оставить полный отчёт на сервере, не загружать в Litterbox
       --workdir <dir>    рабочая папка для результатов
   -h, --help             эта справка
   -v, --version          версия
+
+По умолчанию ZIP с картинками загружается в Litterbox на 1 час.
 EOF
 }
 
@@ -103,6 +111,7 @@ parse_flags() {
       -t|--theme)   THEME="$2"; shift 2 ;;
       --no-png)     MAKE_PNG=0; shift ;;
       --no-zip)     MAKE_ZIP=0; shift ;;
+      --no-upload)  MAKE_UPLOAD=0; shift ;;
       --workdir)    OUT="$2"; shift 2 ;;
       -h|--help)    usage; exit 0 ;;
       -v|--version) echo "scriptest v$VERSION"; exit 0 ;;
@@ -134,6 +143,46 @@ setup_privileges() {
   else
     warn "Запущено не от root, и sudo не найден. Часть тестов может не работать (YABS требует root)."
   fi
+}
+
+enable_bbr() {
+  local available
+  if ! available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)"; then
+    warn "Не удалось проверить поддержку BBR."
+    return 1
+  fi
+  if [[ " $available " != *" bbr "* ]] && ! $SUDO modprobe tcp_bbr; then
+    warn "BBR недоступен в этом ядре или нет прав загрузить модуль."
+    return 1
+  fi
+  if ! $SUDO sysctl -w net.ipv4.tcp_congestion_control=bbr; then
+    warn "Не удалось включить BBR. Алгоритм не изменён."
+    return 1
+  fi
+  ok "BBR включён до перезагрузки."
+}
+
+disable_ipv6() {
+  local peer address previous
+  IFS=' ' read -r peer _ address _ <<< "${SSH_CONNECTION:-}"
+  if [[ "$peer" == *:* || "$address" == *:* ]]; then
+    warn "Нельзя отключить IPv6 из обнаруженной IPv6 SSH-сессии."
+    return 1
+  fi
+  warn "Отключение IPv6 может оборвать соединения. Продолжай только при доступе по IPv4 или через консоль."
+  confirm "Отключить IPv6 до перезагрузки?" || return 1
+  if ! previous="$(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null)" ||
+     ! $SUDO sysctl -w net.ipv6.conf.default.disable_ipv6=1; then
+    warn "Не удалось отключить IPv6."
+    return 1
+  fi
+  if ! $SUDO sysctl -w net.ipv6.conf.all.disable_ipv6=1; then
+    $SUDO sysctl -w "net.ipv6.conf.default.disable_ipv6=$previous" ||
+      warn "Не удалось вернуть настройку IPv6 по умолчанию."
+    warn "Не удалось отключить IPv6 на текущих интерфейсах."
+    return 1
+  fi
+  ok "IPv6 отключён до перезагрузки."
 }
 
 # ----------------------------------------------------------------------------
@@ -225,7 +274,6 @@ ensure_freeze() {
       MAKE_PNG=0; return 0
     fi
     FREEZE_DIR="$(mktemp -d)" || { warn "Нет временной папки для freeze."; MAKE_PNG=0; return 0; }
-    trap 'rm -rf -- "$FREEZE_DIR"' EXIT
     bin_dir="${url##*/}"
     bin_dir="${bin_dir%.tar.gz}"
     curl -fsSL --max-time 120 "$url" -o "$FREEZE_DIR/freeze.tar.gz" ||
@@ -246,10 +294,17 @@ ensure_freeze() {
 # ----------------------------------------------------------------------------
 SYSINFO_FILE=""
 
+os_name() {
+  local name
+  name="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")"
+  if [ -n "$name" ]; then printf '%s\n' "$name"; else uname -s; fi
+}
+
 setup_workdir() {
   if [ -z "$OUT" ]; then
     OUT="$(mktemp -d "$PWD/scriptest-$(date +%Y%m%d-%H%M%S)-XXXXXX")" ||
       die "Не удалось создать папку отчёта."
+    OUT_CREATED=1
   else
     mkdir -p -- "$OUT" || die "Не удалось создать папку: $OUT"
     OUT="$(cd -- "$OUT" && pwd -P)" || die "Не удалось открыть папку отчёта."
@@ -260,9 +315,9 @@ setup_workdir() {
 
   # sysinfo.txt — шапка для summary и скриншотов
   SYSINFO_FILE="$OUT/sysinfo.txt"
+  REPORT_LOGS=(sysinfo.txt)
   local os_pretty cpu_model cores ram_gb disk ip virt kernel
-  os_pretty="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")"
-  [ -n "$os_pretty" ] || os_pretty="$(uname -s)"
+  os_pretty="$(os_name)"
   cpu_model="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//' || true)"
   [ -n "$cpu_model" ] || cpu_model="$(uname -m)"
   cores="$(nproc 2>/dev/null || echo '?')"
@@ -286,8 +341,9 @@ setup_workdir() {
     echo "CPU      : $cpu_model ($cores vCPU)"
     echo "RAM      : ${ram_gb} GB"
     echo "Disk /   : $disk"
+    echo "TCP CC   : $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '?')"
     echo "Date     : $(date -u '+%Y-%m-%d %H:%M UTC')"
-  } > "$SYSINFO_FILE"
+  } > "$SYSINFO_FILE" || die "Не удалось записать $SYSINFO_FILE"
 
   cat "$SYSINFO_FILE"
 }
@@ -322,9 +378,13 @@ run_test() {
 
   info ">> $title (лимит $(format_duration "$tmo"))"
   start=$SECONDS
-  # stdin закрыт: дочерние скрипты не смогут «повиснуть» в ожидании ввода (apt-подтверждения и т.п.)
-  timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" 2>&1 </dev/null \
-    | sed -u -E "$ANSI_STRIP_SED" | tee -a "$log"
+  # Каждый тест пишет временные файлы в отдельный каталог, а не в папку пользователя.
+  (
+    work="$(mktemp -d "$OUT/.bench-$id-XXXXXX")" || exit 125
+    trap 'rm -rf -- "$work"' EXIT
+    cd -- "$work" || exit 125
+    timeout -k 15 "$tmo" bash -o pipefail -c "$cmd"
+  ) 2>&1 </dev/null | sed -u -E "$ANSI_STRIP_SED" | tee -a "$log"
   codes=("${PIPESTATUS[@]}")
   duration="$(format_duration "$((SECONDS - start))")"
   rc="${codes[0]}"
@@ -345,6 +405,7 @@ run_test() {
   fi
   printf '\n[scriptest] %s · %s · exit %s\n' "$status" "$duration" "$rc" >> "$log" ||
     die "Не удалось дописать $log"
+  [[ " ${REPORT_LOGS[*]} " == *" $id.txt "* ]] || REPORT_LOGS+=("$id.txt")
   RESULTS+=("$id|$status|$duration")
 }
 
@@ -427,13 +488,14 @@ render_pngs() {
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
   info "Генерирую PNG-скриншоты..."
-  local f image message count=0
+  local name f image message
   local -a style=(--config full)
   if [ "$THEME" = light ]; then
     style=(--config base --theme monokailight --border.color '#d4d4d4' --border.width 1
       --border.radius 8 --font.size 14 --padding 20,28)
   fi
-  for f in "$OUT"/*.txt; do
+  for name in "${REPORT_LOGS[@]}"; do
+    f="$OUT/$name"
     [ -s "$f" ] || continue
     image="${f%.txt}.png"
     if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
@@ -447,13 +509,13 @@ render_pngs() {
       fi
     fi
     ok "Скриншот: ${image##*/}"
-    count=$((count + 1))
+    REPORT_IMAGES+=("${image##*/}")
   done
-  info "Скриншотов создано: $count"
+  info "Скриншотов создано: ${#REPORT_IMAGES[@]}"
 }
 
 # ----------------------------------------------------------------------------
-# Summary + zip
+# Отчёт, ZIP и загрузка
 # ----------------------------------------------------------------------------
 make_summary() {
   local md="$OUT/summary.md"
@@ -477,9 +539,8 @@ make_summary() {
     echo "## Файлы"
     echo
     local f
-    for f in "$OUT"/*.txt "$OUT"/*.png "$OUT"/*.svg; do
-      [ -f "$f" ] || continue
-      printf -- '- `%s`\n' "${f##*/}"
+    for f in "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}"; do
+      printf -- '- `%s`\n' "$f"
     done
   } > "$md" || die "Не удалось создать $md"
   ok "Summary: $md"
@@ -489,15 +550,51 @@ make_zip() {
   [ "$MAKE_ZIP" -eq 1 ] || return 0
   command -v zip >/dev/null 2>&1 || { warn "zip не найден — архив не собран (файлы лежат в $OUT)."; return 0; }
   local archive="$OUT.zip"
+  local -a files=("${REPORT_IMAGES[@]}")
+  if (( ! MAKE_UPLOAD || ${#files[@]} == 0 )); then
+    files+=(summary.md "${REPORT_LOGS[@]}")
+  fi
   if [ -e "$archive" ] || [ -L "$archive" ]; then
     warn "Архив уже существует: $archive. Не перезаписываю."
     return 0
   fi
-  ( cd -- "$OUT" && shopt -s nullglob && zip -q "$archive" summary.md *.txt *.png *.svg ) ||
+  ( cd -- "$OUT" && zip -q "$archive" "${files[@]}" ) ||
     { warn "Ошибка сборки архива. Отчёт остался в $OUT."; return 0; }
+  ZIP_PATH="$archive"
   ok "Архив: $archive"
   info "Скачай с компьютера (замени SERVER на адрес, по которому подключаешься по SSH):"
   printf '  scp %q .\n' "$(id -un)@SERVER:$archive"
+}
+
+upload_zip() {
+  (( MAKE_UPLOAD && ${#REPORT_IMAGES[@]} > 0 )) && [ -n "$ZIP_PATH" ] || return 1
+  local link path="${ZIP_PATH//\\/\\\\}"
+  path="${path//\"/\\\"}"
+  info "Загружаю ZIP с изображениями в Litterbox на 1 час..."
+  if ! link="$(curl -q -fsS --proto '=https' --connect-timeout 10 --max-time 120 \
+    -F 'reqtype=fileupload' -F 'time=1h' -F "fileToUpload=@\"$path\";filename=scriptest.zip" \
+    https://litterbox.catbox.moe/resources/internals/api.php)"; then
+    warn "Загрузка не удалась. Файлы не удалены."
+    return 1
+  fi
+  link="${link%$'\r'}"
+  if [[ ! "$link" =~ ^https://litter\.catbox\.moe/[a-zA-Z0-9_-]+\.zip$ ]]; then
+    warn "Litterbox не вернул ссылку на ZIP. Файлы не удалены."
+    return 1
+  fi
+  ok "Ссылка на 1 час: $link"
+}
+
+cleanup_report() {
+  if (( ${#REPORT_IMAGES[@]} != ${#REPORT_LOGS[@]} )); then
+    warn "Часть скриншотов не создана. Рабочие файлы сохранены в $OUT"
+    return
+  fi
+  local file
+  for file in summary.md "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}"; do
+    rm -f -- "$OUT/$file" || warn "Не удалось удалить $OUT/$file"
+  done
+  if (( OUT_CREATED )); then rmdir -- "$OUT" 2>/dev/null || :; fi
 }
 
 print_results() {
@@ -521,11 +618,8 @@ print_banner() {
   local ver="v$VERSION"
   local host ip os
   host="$(hostname 2>/dev/null || echo '?')"
-  ip="?" os="?"
-  [ -n "${SYSINFO_FILE:-}" ] && [ -f "$SYSINFO_FILE" ] && {
-    ip="$(awk -F': *' '/^IP/{print $2}' "$SYSINFO_FILE")"
-    os="$(awk -F': *' '/^OS/{print $2}' "$SYSINFO_FILE")"
-  }
+  IFS=' ' read -r _ _ ip _ <<< "${SSH_CONNECTION:-}"
+  os="$(os_name)"
   cat <<'BANNER'
 
   █████  █████  ████   ███  ████   █████  █████  █████  █████
@@ -538,8 +632,46 @@ BANNER
   printf '  %bscriptest %s%b %b· мульти-тест сервера%b\n' \
     "${C_BOLD}" "$ver" "${C_RESET}" "${C_DIM}" "${C_RESET}"
   printf '  %bHost:%b %s %b· IP:%b %s %b· %s%b\n' \
-    "${C_BOLD}" "${C_RESET}" "${host}" "${C_DIM}" "${C_RESET}" "${ip}" "${C_DIM}" "${os}" "${C_RESET}"
+    "${C_BOLD}" "${C_RESET}" "${host}" "${C_DIM}" "${C_RESET}" "${ip:-?}" "${C_DIM}" "${os}" "${C_RESET}"
   printf '  %b─────────────────────────────────────────────────%b\n' "${C_DIM}" "${C_RESET}"
+}
+
+confirm() {
+  local answer
+  printf '%s [y/N]: ' "$1"
+  read -r answer || return 1
+  case "$answer" in y|Y|yes|Yes|д|Д|да|Да) return 0 ;; *) return 1 ;; esac
+}
+
+offer_bbr() {
+  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr ]; then
+    info "BBR уже включён."
+  elif confirm "Включить BBR перед прогоном (до перезагрузки)?"; then
+    enable_bbr || warn "Продолжаю тесты без изменения алгоритма TCP."
+  fi
+}
+
+utilities_menu() {
+  local choice cc ipv6
+  while true; do
+    clear_screen
+    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf '?')"
+    ipv6="$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || printf '?')"
+    case "$ipv6" in 0) ipv6="включён" ;; 1) ipv6="отключён" ;; esac
+    printf '\n  %bУтилиты%b · изменения до перезагрузки\n\n' "$C_BOLD" "$C_RESET"
+    printf '  1) Включить BBR (текущий алгоритм TCP: %s)\n' "$cc"
+    printf '  2) Отключить IPv6 (сейчас: %s)\n' "$ipv6"
+    printf '  0) Назад\n\n  ▸ Выбор: '
+    read -r choice || return
+    case "$choice" in
+      1) if confirm "Включить BBR?"; then enable_bbr; fi ;;
+      2) disable_ipv6 ;;
+      0|q|Q) return ;;
+      *) continue ;;
+    esac
+    printf '\n  Enter — продолжить: '
+    read -r _ || return
+  done
 }
 
 menu() {
@@ -563,17 +695,23 @@ menu() {
     echo
     printf '  %b a)%b %sЗапустить ВСЕ тесты%s\n' \
       "${C_OK}${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+    printf '  %b u)%b Утилиты (BBR, IPv6)\n' "${C_BOLD}" "${C_RESET}"
     printf '  %b q)%b Выход\n' "${C_BOLD}" "${C_RESET}"
+    if (( MAKE_UPLOAD && MAKE_PNG && MAKE_ZIP )); then
+      printf '\n  ZIP с картинками отправится в Litterbox на 1 час.\n'
+    fi
     echo
     printf '  %b─────────────────────────────────────────────────%b\n' "${C_DIM}" "${C_RESET}"
-    printf '  %b▸%b Номера через запятую (напр. 1,3,5) · a — все · q — выход: ' "${C_INFO}" "${C_RESET}"
+    printf '  %b▸%b Номера через запятую · a — все · u — утилиты · q — выход: ' "${C_INFO}" "${C_RESET}"
     local choice
     read -r choice || return 1
     case "$choice" in
       q|Q) clear_screen; info "Выход."; exit 0 ;;
+      u|U) utilities_menu ;;
       a|A)
         if confirm_all; then
           select_tests
+          ASK_BBR=1
           return
         fi
         ;;
@@ -601,10 +739,7 @@ menu() {
 
 confirm_all() {
   printf '%s\n' "${C_INFO}${C_DIM}Сетевые тесты расходуют трафик. Лимиты указаны на одну попытку; резервные тесты запускаются отдельно.${C_RESET}"
-  printf 'Запустить все тесты? [y/N]: '
-  local ans
-  read -r ans || return 1
-  case "$ans" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac
+  confirm "Запустить все тесты?"
 }
 
 # ----------------------------------------------------------------------------
@@ -619,19 +754,24 @@ main() {
   # apt/dnf не должны задавать вопросов из дочерних скриптов
   export DEBIAN_FRONTEND=noninteractive
   setup_privileges
-  detect_pkg
-  install_deps
-  umask 077
-  setup_workdir
 
   if [ -n "$ONLY" ]; then
     select_tests
+    if [ "$ONLY" = "__all__" ] && [ -t 0 ]; then ASK_BBR=1; fi
   else
     SELECTED=()
     menu || die "Нет ввода. Укажи --all или --only <id>."
   fi
 
   [ ${#SELECTED[@]} -gt 0 ] || die "Не выбран ни один тест."
+  if (( MAKE_UPLOAD && MAKE_PNG && MAKE_ZIP )); then
+    info "В Litterbox уйдут только картинки (могут содержать IP и hostname). Без отправки: --no-upload."
+  fi
+  if (( ASK_BBR )); then offer_bbr; fi
+  detect_pkg
+  install_deps
+  umask 077
+  setup_workdir
 
   info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
   local id start=$SECONDS
@@ -641,11 +781,17 @@ main() {
   TESTS_ELAPSED=$((SECONDS - start))
 
   print_results
+  trap '[ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
   ensure_freeze
   render_pngs
   make_summary
   make_zip
-  info "Готово. Все файлы: $OUT"
+  if upload_zip; then
+    cleanup_report
+    info "Локальный ZIP сохранён: $ZIP_PATH"
+  else
+    info "Файлы отчёта: $OUT"
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
