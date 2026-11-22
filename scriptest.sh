@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.2.6"
+VERSION="0.2.7"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -244,7 +244,7 @@ ensure_freeze() {
   if command -v freeze >/dev/null 2>&1; then
     FREEZE_BIN="$(command -v freeze)"
   else
-    local os arch url api bin_dir
+    local os arch url bin_dir
     os="$(uname -s)"; arch="$(uname -m)"
     case "$os" in
       Linux)  os="Linux" ;;
@@ -259,15 +259,7 @@ ensure_freeze() {
     esac
 
     info "Скачиваю freeze ($os/$arch)..."
-    api="$(curl -fsSL --max-time 20 https://api.github.com/repos/charmbracelet/freeze/releases/latest)" || api=""
-    url="$(printf '%s' "$api" |
-      grep -oE "https://github\\.com/charmbracelet/freeze/releases/download/[^\"/]+/freeze_[0-9.]+_${os}_${arch}\\.tar\\.gz\"" |
-      head -n1)"
-    url="${url%\"}"
-    if [ -z "$url" ]; then
-      warn "Не удалось получить ссылку на freeze — PNG не будут сгенерированы."
-      MAKE_PNG=0; return 0
-    fi
+    url="https://github.com/charmbracelet/freeze/releases/download/v0.2.2/freeze_0.2.2_${os}_${arch}.tar.gz"
     FREEZE_DIR="$(mktemp -d)" || { warn "Нет временной папки для freeze."; MAKE_PNG=0; return 0; }
     bin_dir="${url##*/}"
     bin_dir="${bin_dir%.tar.gz}"
@@ -355,11 +347,21 @@ TESTS_ELAPSED=0
 sanitize_stream() {
   # C0-символы (кроме \n, \t и ESC=033) убирает tr — у mawk нет надёжных
   # восьмеричных escape в регулярках
-  tr -d '\r\000-\010\013\014\016-\032\034-\037\177' |
+  tr -d '\000-\006\013\014\016-\032\034-\037\177' |
   awk '
   BEGIN { esc = sprintf("%c", 27) }
   {
     line = $0; out = ""
+    # CRLF завершает строку; внутренний CR начинает следующий кадр на той же строке.
+    sub(/\r$/, "", line); sub(/^.*\r/, "", line)
+    # Спиннеры часто стирают предыдущий символ через backspace.
+    while (match(line, /[^\010]\010/)) {
+      pos = RSTART
+      # mawk работает с байтами: захватываем весь предыдущий UTF-8 символ.
+      while (pos > 1 && substr(line,pos,1) ~ /^[\200-\277]$/) pos--
+      line = substr(line,1,pos-1) substr(line,RSTART+2)
+    }
+    gsub(/\010/, "", line)
     while (1) {
       c1 = index(line, esc "["); c2 = index(line, esc "]")
       if (!c1 && !c2) break
@@ -404,12 +406,12 @@ sanitize_stream() {
       rest = substr(line, c2 + 2)
       bel = index(rest, "\007"); st = index(rest, esc "\\")
       if (bel && (!st || bel < st)) rest = substr(rest, bel + 1)
-      else if (st) rest = substr(rest, st + 1)
+      else if (st) rest = substr(rest, st + 2)
       else rest = ""
       line = rest
     }
     line = out line
-    print line
+    gsub(/\007/, "", line); print line
     fflush()
   }'
 }
@@ -444,7 +446,7 @@ run_test() {
     local runner='' logger=''
     trap 'for pid in "$runner" "$logger"; do [[ -z "$pid" ]] || kill -KILL -- "-$pid" 2>/dev/null; done; wait 2>/dev/null; exit 130' INT TERM
     set -m
-    (set +m; set -o pipefail; sanitize_stream < output | tee -a "$log") &
+    (set +m; set -o pipefail; sanitize_stream < output >> "$log") &
     logger=$!
     timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > output 2>&1 &
     runner=$!
@@ -456,7 +458,9 @@ run_test() {
   rc=$?
   if (( rc == 130 )); then exit 130; fi
   if (( rc == 125 )); then die "Не удалось запустить тест или сохранить вывод в $log"; fi
-  duration="$(format_duration "$((SECONDS - start))")"
+  local elapsed=$((SECONDS - start))
+  TESTS_ELAPSED=$((TESTS_ELAPSED + elapsed))
+  duration="$(format_duration "$elapsed")"
 
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     status="TIMEOUT"
@@ -475,6 +479,9 @@ run_test() {
     die "Не удалось дописать $log"
   [[ " ${REPORT_LOGS[*]} " == *" $id.txt "* ]] || REPORT_LOGS+=("$id.txt")
   RESULTS+=("$id|$status|$duration")
+  # Кадры анимации не копируются в терминал: пользователь видит итог целиком.
+  sed -n '/^====/,$p' "$log"
+  render_pngs "$id.txt"
 }
 
 # run_speed <id> <title> <timeout> <primary_cmd> <fallback_cmd>
@@ -565,18 +572,25 @@ install_svg_converter() {
   esac
 }
 
+CONVERTER_TRIED=0
+# Показывает готовый PNG прямо в терминале, если он умеет рисовать картинки.
+show_preview() {
+  if [[ -t 1 ]] && command -v chafa >/dev/null; then
+    chafa --size 100x40 "$1" || warn "Терминал не показал превью."
+  fi
+}
+
 render_pngs() {
   [ "$MAKE_PNG" -eq 1 ] || return 0
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
-  info "Генерирую PNG-скриншоты..."
-  local name f image svg message tried_install=0
+  local name f image svg message
   local -a style=(--config full)
   if [ "$THEME" = light ]; then
     style=(--config base --theme monokailight --border.color '#d4d4d4' --border.width 1
       --border.radius 8 --font.size 14 --padding 20,28)
   fi
-  for name in "${REPORT_LOGS[@]}"; do
+  for name in "$@"; do
     f="$OUT/$name"
     [ -s "$f" ] || continue
     image="${f%.txt}.png"
@@ -589,8 +603,8 @@ render_pngs() {
         warn "SVG тоже не создан${message:+: ${message%%$'\n'*}}."
         continue
       fi
-      if ! command -v rsvg-convert >/dev/null && (( ! tried_install )); then
-        tried_install=1
+      if ! command -v rsvg-convert >/dev/null && (( ! CONVERTER_TRIED )); then
+        CONVERTER_TRIED=1
         install_svg_converter || warn "Не удалось установить rsvg-convert."
       fi
       if timeout -k 5 60 rsvg-convert -o "$image" "$svg" && [ -s "$image" ]; then
@@ -601,10 +615,10 @@ render_pngs() {
         continue
       fi
     fi
-    ok "Скриншот: ${image##*/}"
+    ok "Скриншот: $image"
     REPORT_IMAGES+=("${image##*/}")
+    show_preview "$image"
   done
-  info "Скриншотов создано: ${#REPORT_IMAGES[@]}"
 }
 
 # ----------------------------------------------------------------------------
@@ -843,18 +857,16 @@ main() {
   install_deps
   umask 077
   setup_workdir
+  trap '[ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
+  ensure_freeze
+  render_pngs sysinfo.txt
 
   info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
-  local id start=$SECONDS
+  local id
   for id in "${SELECTED[@]}"; do
     run_test_by_id "$id"
   done
-  TESTS_ELAPSED=$((SECONDS - start))
 
-  print_results
-  trap '[ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
-  ensure_freeze
-  render_pngs
   make_summary
   make_zip
 }
