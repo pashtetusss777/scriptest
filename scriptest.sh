@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.1.2"
+VERSION="0.1.3"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -39,18 +39,33 @@ FREEZE_BIN=""
 THEME_FILE=""
 
 # ----------------------------------------------------------------------------
-# Тесты: id|title|timeout
+# Тесты: id|name — description|timeout
 # ----------------------------------------------------------------------------
 TESTS=(
-  "sysbench|Sysbench CPU (--threads=1)|180"
-  "ipcheck|IP.Check.Place (блокировки IP-адреса)|240"
-  "ipregion|IP Region (регион по IP)|120"
-  "dpi|CensorCheck DPI (блок по DPI)|360"
-  "insta|Instagram audio check|300"
-  "speed-ru|Скорость к РФ-провайдерам (gig.ovh / tlab.pw)|1500"
-  "speed-world|Скорость к зарубежным провайдерам (bench.sh / speed.tlab.pw)|1500"
-  "yabs|YABS (диск, сеть iperf3, GeekBench)|1800"
+  "sysbench|sysbench — тест процессора|180"
+  "ipcheck|IP Check Place — блокировки IP зарубежными сервисами|240"
+  "ipregion|IP Region — регион по IP|120"
+  "dpi|CensorCheck — блок по DPI (серверы РФ)|360"
+  "insta|Instagram — проверка аудио|300"
+  "speed-ru|bench.gig.ovh — скорость к РФ-провайдерам|1500"
+  "speed-world|bench.sh — скорость к зарубежным провайдерам|1500"
+  "yabs|YABS — диск, сеть iperf3, GeekBench|1800"
 )
+
+# test_field <id> title|tmo — достать поле теста из TESTS
+test_field() {
+  local t rest
+  for t in "${TESTS[@]}"; do
+    [ "${t%%|*}" = "$1" ] || continue
+    rest="${t#*|}"
+    case "$2" in
+      title) printf '%s' "${rest%%|*}" ;;
+      tmo)   printf '%s' "${rest#*|}" ;;
+    esac
+    return 0
+  done
+  return 1
+}
 
 # ----------------------------------------------------------------------------
 # Флаги
@@ -100,7 +115,7 @@ list_tests() {
   printf '%s\n' "Доступные тесты:"
   for t in "${TESTS[@]}"; do
     IFS='|' read -r id title tmo <<< "$t"
-    printf '  %2d) %-12s %s\n' "$i" "$id" "$title"
+    printf '  %2d) %s\n' "$i" "$title"
     i=$((i+1))
   done
 }
@@ -396,7 +411,7 @@ run_sysbench() {
     RESULTS+=("sysbench|SKIPPED")
     return
   fi
-  run_test "sysbench" "Sysbench CPU (--threads=1)" 180 "sysbench cpu run --threads=1"
+  run_test "sysbench" "$(test_field sysbench title)" "$(test_field sysbench tmo)" "sysbench cpu run --threads=1"
 }
 
 run_yabs() {
@@ -404,22 +419,22 @@ run_yabs() {
   if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
     cmd="curl -sL yabs.sh | $SUDO bash -s -- -4"
   fi
-  run_test "yabs" "YABS (диск, сеть iperf3, GeekBench)" 1800 "$cmd"
+  run_test "yabs" "$(test_field yabs title)" "$(test_field yabs tmo)" "$cmd"
 }
 
 run_test_by_id() {
-  local id="$1"
+  local id="$1" title tmo
+  title="$(test_field "$id" title)"
+  tmo="$(test_field "$id" tmo)"
   case "$id" in
-    ipcheck)    run_test "ipcheck" "IP.Check.Place (блокировки IP-адреса)" 240 "bash <(curl -Ls IP.Check.Place) -l en" ;;
-    ipregion)   run_test "ipregion" "IP Region (регион по IP)" 120 "bash <(wget -qO - https://github.com/vernette/ipregion/raw/master/ipregion.sh)" ;;
-    dpi)        run_test "dpi" "CensorCheck DPI (блок по DPI)" 360 "bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi" ;;
-    insta)      run_test "insta" "Instagram audio check" 300 "bash <(curl -L -s https://bench.openode.xyz/checker_inst.sh)" ;;
-    speed-ru)     run_speed "speed-ru" "Скорость к РФ-провайдерам (gig.ovh / tlab.pw)" 1500 \
-                  "wget -qO- bench.gig.ovh | bash" "wget -qO- bench.tlab.pw | bash" ;;
-    speed-world)  run_speed "speed-world" "Скорость к зарубежным провайдерам (bench.sh / speed.tlab.pw)" 1500 \
-                  "wget -qO- bench.sh | bash" "wget -qO- speed.tlab.pw | bash" ;;
-    yabs)       run_yabs ;;
-    sysbench)   run_sysbench ;;
+    ipcheck)     run_test "$id" "$title" "$tmo" "bash <(curl -Ls IP.Check.Place) -l en" ;;
+    ipregion)    run_test "$id" "$title" "$tmo" "bash <(wget -qO - https://github.com/vernette/ipregion/raw/master/ipregion.sh)" ;;
+    dpi)         run_test "$id" "$title" "$tmo" "bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi" ;;
+    insta)       run_test "$id" "$title" "$tmo" "bash <(curl -L -s https://bench.openode.xyz/checker_inst.sh)" ;;
+    speed-ru)    run_speed "$id" "$title" "$tmo" "wget -qO- bench.gig.ovh | bash" "wget -qO- bench.tlab.pw | bash" ;;
+    speed-world) run_speed "$id" "$title" "$tmo" "wget -qO- bench.sh | bash" "wget -qO- speed.tlab.pw | bash" ;;
+    yabs)        run_yabs ;;
+    sysbench)    run_sysbench ;;
     *) warn "Неизвестный тест: $id" ;;
   esac
 }
@@ -542,18 +557,12 @@ print_banner() {
     ip="$(awk -F': *' '/^IP/{print $2}' "$SYSINFO_FILE")"
     os="$(awk -F': *' '/^OS/{print $2}' "$SYSINFO_FILE")"
   }
-  cat <<'BANNER'
-
-   ____  _____ _   _ _____ ____  _____ ____
-  / ___| / ___|| __ )|_ _|| '_ \ | |_  / _ \ / ___|| |_
-  \___ \| |    |  _ \ | | || |_) || __|| |__|\___ \| __|
-   ___) || |___ | |_) | | | | .__/ | |_ |  __| ___) || |_
-  |____/  \____||____/ |___||_|     \__| \___||____/ \__|
-
-BANNER
-  printf '%s\n' "  ${C_BOLD}scriptest ${ver}${C_RESET} ${C_DIM}· мульти-тест сервера${C_RESET}"
-  printf '%s\n' "  ${C_DIM}Host: ${host} · IP: ${ip} · ${os}${C_RESET}"
-  printf '%s\n' "  ${C_DIM}─────────────────────────────────────────────────${C_RESET}"
+  printf '\n'
+  printf '  %bscriptest %s%b %b· мульти-тест сервера%b\n' \
+    "${C_BOLD}" "$ver" "${C_RESET}" "${C_DIM}" "${C_RESET}"
+  printf '  %bHost:%b %s %b· IP:%b %s %b· %s%b\n' \
+    "${C_BOLD}" "${C_RESET}" "${host}" "${C_DIM}" "${C_RESET}" "${ip}" "${C_DIM}" "${os}" "${C_RESET}"
+  printf '  %b─────────────────────────────────────────────────%b\n' "${C_DIM}" "${C_RESET}"
 }
 
 menu() {
@@ -561,22 +570,26 @@ menu() {
     clear_screen
     print_banner
     echo
-    printf '%s\n' "  ${C_BOLD}Доступные тесты${C_RESET}"
+    printf '  %bДоступные тесты%b\n' "${C_BOLD}" "${C_RESET}"
     echo
-    local i=1 t id title tmo mins
+    local i=1 t id title tmo mins name desc
     for t in "${TESTS[@]}"; do
       IFS='|' read -r id title tmo <<< "$t"
       mins=$(( (tmo + 59) / 60 ))
-      printf '   %s[%2d]%s %-13s %s %s~%d мин%s\n' \
-        "${C_BOLD}" "$i" "${C_RESET}" "$id" "$title" "${C_DIM}" "$mins" "${C_RESET}"
+      name="${title%% — *}"
+      desc="${title#* — }"
+      printf '  %b%2d)%b %s %b— %s %b· ~%d мин%b\n' \
+        "${C_OK}${C_BOLD}" "$i" "${C_RESET}" "${name}" \
+        "${C_DIM}" "${desc}" "${C_DIM}" "$mins" "${C_RESET}"
       i=$((i+1))
     done
     echo
-    printf '   %s[ a ]%s Запустить %sВСЕ тесты%s\n' "${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
-    printf '   %s[ q ]%s Выход\n' "${C_BOLD}" "${C_RESET}"
+    printf '  %b a)%b %sЗапустить ВСЕ тесты%s %b· ~60 мин%b\n' \
+      "${C_OK}${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}" "${C_DIM}" "${C_RESET}"
+    printf '  %b q)%b Выход\n' "${C_BOLD}" "${C_RESET}"
     echo
-    printf '%s\n' "  ${C_DIM}─────────────────────────────────────────────────${C_RESET}"
-    printf '  %s▸%s Номера через запятую (напр. 1,3,5) · a — все · q — выход: ' "${C_INFO}" "${C_RESET}"
+    printf '  %b─────────────────────────────────────────────────%b\n' "${C_DIM}" "${C_RESET}"
+    printf '  %b▸%b Номера через запятую (напр. 1,3,5) · a — все · q — выход: ' "${C_INFO}" "${C_RESET}"
     local choice
     read -r choice
     case "$choice" in
