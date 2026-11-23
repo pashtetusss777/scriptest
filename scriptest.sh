@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.9"
+VERSION="0.3.10"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -773,8 +773,10 @@ select_tests() {
 render_image() {
   local input="$1" output="$2"
   shift 2
-  # --language ansi: freeze рисует текст с сохранением ANSI-цветов из лога
-  timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 --font.family "$MONO_FONT" "$@" < "$input"
+  # --language ansi: freeze рисует текст с сохранением ANSI-цветов из лога.
+  # GOMAXPROCS=1: у freeze 0.2.2 на многоядерных машинах изредка случается
+  # SIGSEGV в рантайме Go — рендеру параллелизм всё равно не нужен.
+  GOMAXPROCS=1 timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 --font.family "$MONO_FONT" "$@" < "$input"
 }
 
 render_pngs() {
@@ -791,10 +793,17 @@ render_pngs() {
     f="$OUT/$name"
     [ -s "$f" ] || continue
     image="${f%.txt}.png"
-    if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
+    local attempt ok_png=0
+    for attempt in 1 2 3; do
+      if message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" && [ -s "$image" ]; then
+        ok_png=1; break
+      fi
       # Битую или пустую картинку в отчёт не берём: лучше оставить .txt,
       # чем потерять текст теста из-за пустого PNG.
       rm -f -- "$image"
+      [ "$attempt" -lt 3 ] && sleep 1
+    done
+    if (( ! ok_png )); then
       warn "PNG для ${f##*/} не создан, исходник оставлен${message:+: ${message%%$'\n'*}}."
       continue
     fi
