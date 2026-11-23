@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.8"
+VERSION="0.3.9"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -95,7 +95,6 @@ MONO_FONT=""
 FREEZE_BIN=""
 FREEZE_DIR=""
 declare -a REPORT_LOGS=() REPORT_IMAGES=()
-PREVIEW_SHOWN=0               # превью в терминале уже показало результат теста
 
 # ----------------------------------------------------------------------------
 # Тесты: id|name — description|timeout
@@ -632,7 +631,6 @@ format_duration() {
 run_test() {
   local id="$1" title="$2" tmo="$3" cmd="$4"
   local log="$OUT/$id.txt" start duration status size rc
-  PREVIEW_SHOWN=0
 
   {
     echo "================================================================"
@@ -651,21 +649,20 @@ run_test() {
   fi
   spinner_start "$label"
   # wait прерывается сразу; отдельная группа позволяет остановить и потомков теста.
+  # Тест пишет во временный файл, а не в FIFO: если потомок оставит фоновый
+  # процесс с открытым stdout, ожидание конца записи не зависнет навсегда.
   (
     work="$(mktemp -d "$OUT/.bench-$id-XXXXXX")" || exit 125
     trap 'rm -rf -- "$work"' EXIT
     cd -- "$work" || exit 125
-    mkfifo output || exit 125
-    local runner='' logger=''
-    trap 'for pid in "$runner" "$logger"; do [[ -z "$pid" ]] || kill -KILL -- "-$pid" 2>/dev/null; done; wait 2>/dev/null; exit 130' INT TERM
+    local runner=''
+    trap '[[ -z "$runner" ]] || kill -KILL -- "-$runner" 2>/dev/null; wait 2>/dev/null; exit 130' INT TERM
     set -m
-    (set +m; set -o pipefail; sanitize_stream < output >> "$log") &
-    logger=$!
-    timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > output 2>&1 &
+    timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > raw 2>&1 &
     runner=$!
     wait "$runner"; rc=$?
     runner=''
-    wait "$logger" || exit 125
+    sanitize_stream < raw >> "$log" || exit 125
     exit "$rc"
   )
   rc=$?
@@ -693,8 +690,7 @@ run_test() {
     die "Не удалось дописать $log"
   [[ " ${REPORT_LOGS[*]} " == *" $id.txt "* ]] || REPORT_LOGS+=("$id.txt")
   RESULTS+=("$id|$status|$duration")
-  # Превью chafa уже показало отчёт целиком — не печатаем его второй раз.
-  if (( ! PREVIEW_SHOWN )); then sed -n '/^====/,$p' "$log"; fi
+  sed -n '/^====/,$p' "$log"
   render_pngs "$id.txt"
 }
 
@@ -734,7 +730,11 @@ run_test_by_id() {
     ipcheck)     run_test "$id" "$title" "$tmo" "bash <(curl -Ls IP.Check.Place) -l en" ;;
     # ipregion включает цвета только если stdout — терминал. В логе его нет,
     # поэтому убираем проверку -t 1 прямо в скачиваемом скрипте (NO_COLOR работает).
-    ipregion)    run_test "$id" "$title" "$tmo" "wget -qO- https://github.com/vernette/ipregion/raw/master/ipregion.sh | sed 's/-t 1 \&\& //' | bash -s --" ;;
+    ipregion)
+      run_test "$id" "$title" "$tmo" "wget -qO- https://github.com/vernette/ipregion/raw/master/ipregion.sh | sed 's/-t 1 \&\& //' | bash -s --"
+      grep -qF $'\033[' "$OUT/$id.txt" ||
+        warn "В логе ipregion нет ANSI-цветов — замена '-t 1' могла перестать работать."
+      ;;
     dpi)         run_test "$id" "$title" "$tmo" "bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi" ;;
     insta)       run_test "$id" "$title" "$tmo" "bash <(curl -L -s https://bench.openode.xyz/checker_inst.sh)" ;;
     speed-ru)    run_test "$id" "$title" "$tmo" "wget -qO- bench.tlab.pw | bash" ;;
@@ -777,31 +777,11 @@ render_image() {
   timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 --font.family "$MONO_FONT" "$@" < "$input"
 }
 
-install_svg_converter() {
-  case "${PKG:-}" in
-    apt) $SUDO apt-get install -y librsvg2-bin ;;
-    dnf|yum) $SUDO "$PKG" install -y librsvg2-tools ;;
-    pacman) $SUDO pacman -S --needed --noconfirm librsvg ;;
-    zypper) $SUDO zypper --non-interactive install rsvg-convert ;;
-    apk) $SUDO apk add librsvg ;;
-    *) return 1 ;;
-  esac
-}
-
-CONVERTER_TRIED=0
-# Показывает готовый PNG прямо в терминале, если он умеет рисовать картинки.
-show_preview() {
-  if [[ -t 1 ]] && command -v chafa >/dev/null; then
-    PREVIEW_SHOWN=1
-    chafa --size 100x40 "$1" || { PREVIEW_SHOWN=0; warn "Терминал не показал превью."; }
-  fi
-}
-
 render_pngs() {
   [ "$MAKE_PNG" -eq 1 ] || return 0
   [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ] || { warn "freeze недоступен — пропускаю PNG."; return 0; }
 
-  local name f image svg message
+  local name f image message
   local -a style=(--config full)
   if [ "$THEME" = light ]; then
     style=(--config base --theme monokailight --border.color '#d4d4d4' --border.width 1
@@ -812,29 +792,14 @@ render_pngs() {
     [ -s "$f" ] || continue
     image="${f%.txt}.png"
     if ! message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" || [ ! -s "$image" ]; then
+      # Битую или пустую картинку в отчёт не берём: лучше оставить .txt,
+      # чем потерять текст теста из-за пустого PNG.
       rm -f -- "$image"
-      warn "PNG для ${f##*/} не создан${message:+: ${message%%$'\n'*}}. Пробую SVG."
-      svg="${f%.txt}.svg"
-      if ! message="$(render_image "$f" "$svg" "${style[@]}" 2>&1)" || [ ! -s "$svg" ]; then
-        rm -f -- "$svg"
-        warn "SVG тоже не создан${message:+: ${message%%$'\n'*}}."
-        continue
-      fi
-      if ! command -v rsvg-convert >/dev/null && (( ! CONVERTER_TRIED )); then
-        CONVERTER_TRIED=1
-        install_svg_converter || warn "Не удалось установить rsvg-convert."
-      fi
-      if timeout -k 5 60 rsvg-convert -o "$image" "$svg" && [ -s "$image" ]; then
-        rm -f -- "$svg"
-      else
-        rm -f -- "$image"
-        warn "Не удалось получить PNG. Исходник сохранён: $svg"
-        continue
-      fi
+      warn "PNG для ${f##*/} не создан, исходник оставлен${message:+: ${message%%$'\n'*}}."
+      continue
     fi
     ok "Скриншот: $image"
     REPORT_IMAGES+=("${image##*/}")
-    show_preview "$image"
   done
 }
 

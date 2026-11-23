@@ -91,7 +91,9 @@ chmod +x "$FREEZE_BIN"
 detect_pkg
 setup_privileges
 render_pngs sysinfo.txt speed-test.txt speed-test-fallback.txt deadline.txt
-for id in sysinfo speed-test speed-test-fallback deadline; do
+[ ! -e "$OUT/sysinfo.png" ] || die "Битый PNG попал в отчёт."
+[ -s "$OUT/sysinfo.txt" ] || die "После неудачи freeze потерян исходник."
+for id in speed-test speed-test-fallback deadline; do
   signature="$(od -An -tx1 -N8 "$OUT/$id.png" | tr -d ' \n')"
   [ "$signature" = 89504e470d0a1a0a ] || die "Не создан PNG для $id."
 done
@@ -102,7 +104,7 @@ echo previous > "$scratch/report.zip"
 make_zip || exit 1
 [ "$(cat "$scratch/report.zip")" = previous ] && [ ! -e "$OUT" ] ||
   die "Старый архив изменён или временная папка осталась."
-[ "$(unzip -Z1 "$scratch/report-2.zip" | sort)" = "$(printf '%s\n' sysinfo.png speed-test.png speed-test-fallback.png deadline.png | sort)" ] ||
+[ "$(unzip -Z1 "$scratch/report-2.zip" | sort)" = "$(printf '%s\n' speed-test.png speed-test-fallback.png deadline.png | sort)" ] ||
   die "Архив содержит неверный набор файлов."
 unzip -tq "$scratch/report-2.zip" || exit 1
 
