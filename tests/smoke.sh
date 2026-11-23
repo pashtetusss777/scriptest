@@ -44,10 +44,12 @@ RESULTS=()
 REPORT_LOGS=(sysinfo.txt)
 SH
 (
-  for ((i=0; i<100; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
-  # Шлём Ctrl+C, пока тест жив: на холодном раннере PTY может подниматься дольше 5 с.
-  for ((i=0; i<40; i++)); do printf '\003'; sleep .1; done
-) | timeout 8 script -qec 'bash "$TMPDIR/interrupt.sh"' /dev/null > "$scratch/interrupt.log"
+  # Ждём запуска теста до 20 секунд: на холодном раннере PTY поднимается долго.
+  for ((i=0; i<400; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
+  printf '\003'
+  # Держим пайп открытым, пока trap в run_test убивает группу теста.
+  sleep 1
+) | timeout 20 script -qec 'bash "$TMPDIR/interrupt.sh"' /dev/null > "$scratch/interrupt.log"
 [[ $? == 130 && -s "$scratch/ready" && ! -e "$scratch/fallback" ]] ||
   { cat "$scratch/interrupt.log"; die "Ctrl+C не прервал тест."; }
 if kill -0 "$(cat "$scratch/ready")" 2>/dev/null && [[ "$(ps -o stat= -p "$(cat "$scratch/ready")")" != Z* ]]; then
