@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.12"
+VERSION="0.3.13"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -455,8 +455,24 @@ ensure_freeze() {
     FREEZE_DIR="$(mktemp -d)" || { warn "Нет временной папки для freeze."; MAKE_PNG=0; return 0; }
     bin_dir="${url##*/}"
     bin_dir="${bin_dir%.tar.gz}"
-    curl -fsSL --max-time 120 "$url" -o "$FREEZE_DIR/freeze.tar.gz" ||
-      { warn "Ошибка скачивания freeze."; MAKE_PNG=0; return 0; }
+    local tarball sum want
+    tarball="${url##*/}"
+    want="$(curl -fsSL --max-time 60 "${url%$tarball}checksums.txt" 2>/dev/null |
+            awk -v n="$tarball" '$NF == n {print $1}')"
+    for attempt in 1 2; do
+      curl -fsSL --max-time 120 "$url" -o "$FREEZE_DIR/freeze.tar.gz" ||
+        { warn "Ошибка скачивания freeze."; MAKE_PNG=0; return 0; }
+      # CDN иногда отдаёт битый архив: на CI он ловился как SIGSEGV в рантайме Go.
+      if [ -z "$want" ]; then break; fi
+      sum="$(sha256sum "$FREEZE_DIR/freeze.tar.gz" 2>/dev/null | cut -d' ' -f1)"
+      [ "$sum" = "$want" ] && break
+      warn "Контрольная сумма freeze не сошлась, качаю ещё раз."
+      rm -f "$FREEZE_DIR/freeze.tar.gz"
+    done
+    if [ -n "$want" ] && [ "$sum" != "$want" ]; then
+      warn "Битый freeze с CDN - PNG не будут сгенерированы."
+      MAKE_PNG=0; return 0
+    fi
     tar -xzf "$FREEZE_DIR/freeze.tar.gz" -C "$FREEZE_DIR" "$bin_dir/freeze" ||
       { warn "Ошибка распаковки freeze."; MAKE_PNG=0; return 0; }
     FREEZE_BIN="$FREEZE_DIR/$bin_dir/freeze"
@@ -871,6 +887,22 @@ render_pngs() {
       rm -f -- "$image"
       { [ "$attempt" -lt 3 ] && sleep 1; } || true
     done
+    # Если freeze скачан нами и стабильно падает - бинарник с CDN мог быть
+    # битым: перекачиваем по контрольной сумме и пробуем ещё раз.
+    if (( ! ok_png )) && [ -n "$FREEZE_DIR" ]; then
+      warn "freeze стабильно падает - перекачиваю бинарник."
+      rm -rf -- "$FREEZE_DIR"; FREEZE_DIR=""; FREEZE_BIN=""; MAKE_PNG=1
+      ensure_freeze
+      if [ -n "$FREEZE_BIN" ] && [ -x "$FREEZE_BIN" ]; then
+        for attempt in 1 2 3; do
+          if message="$(render_image "$f" "$image" "${style[@]}" 2>&1)" && [ -s "$image" ]; then
+            ok_png=1; break
+          fi
+          rm -f -- "$image"
+          { [ "$attempt" -lt 3 ] && sleep 1; } || true
+        done
+      fi
+    fi
     if (( ! ok_png )); then
       warn "PNG для ${f##*/} не создан, исходник оставлен${message:+: ${message%%$'\n'*}}."
       continue
