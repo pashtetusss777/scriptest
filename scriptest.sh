@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.10"
+VERSION="0.3.11"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -576,6 +576,35 @@ sanitize_stream() {
       else if (nb > 0) nb--
     }
   }
+  # freeze рисует только truecolor-фоны: стандартные 40-47 и 100-107
+  # он выбрасывает. Переводим их в 48;2 в обычную палитру терминалов.
+  function sgr_params(params,   n, pa, i, v, res) {
+    if (params == "") params = "0"
+    if (params !~ /^[0-9;]+$/ || length(params) > 60) return esc "[0m"
+    n = split(params, pa, ";"); res = ""
+    for (i = 1; i <= n; i++) {
+      v = pa[i]
+      if (v == 40) res = res "48;2;0;0;0;"
+      else if (v == 41) res = res "48;2;205;49;49;"
+      else if (v == 42) res = res "48;2;13;188;121;"
+      else if (v == 43) res = res "48;2;229;229;16;"
+      else if (v == 44) res = res "48;2;36;114;200;"
+      else if (v == 45) res = res "48;2;188;63;188;"
+      else if (v == 46) res = res "48;2;17;168;205;"
+      else if (v == 47) res = res "48;2;229;229;229;"
+      else if (v == 100) res = res "48;2;102;102;102;"
+      else if (v == 101) res = res "48;2;241;76;76;"
+      else if (v == 102) res = res "48;2;35;209;139;"
+      else if (v == 103) res = res "48;2;245;245;67;"
+      else if (v == 104) res = res "48;2;59;142;234;"
+      else if (v == 105) res = res "48;2;209;107;165;"
+      else if (v == 106) res = res "48;2;41;184;219;"
+      else if (v == 107) res = res "48;2;255;255;255;"
+      else res = res v ";"
+    }
+    sub(/;$/, "", res)
+    return esc "[" res "m"
+  }
   {
     line = $0
     # Завершающие CR — перевод строки, а не новый кадр.
@@ -593,10 +622,7 @@ sanitize_stream() {
         params = substr(body, 1, k - 1); final = substr(body, k, 1)
         line = substr(body, k + 1)
         if (final == "m") {
-          if (params == "") params = "0"
-          # freeze рисует и truecolor (38;2), и фоны (48;2/48;5) — сохраняем их.
-          if (params ~ /^[0-9;]+$/ && length(params) <= 60) put(esc "[" params "m")
-          else put(esc "[0m")
+          put(sgr_params(params))
         } else if (final == "A") {
           cursor_up(params == "" ? 1 : params + 0)
         } else if (final == "K") {

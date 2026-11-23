@@ -74,6 +74,9 @@ printf 'old\rNEW\n' | sanitize_stream > "$scratch/sanitized.txt"
 grep -qF 'NEW' "$scratch/sanitized.txt" &&
   ! grep -qF 'old' "$scratch/sanitized.txt" ||
   die "Предыдущий CR-кадр остался в логе."
+printf '\033[41;37;1mBADGE\033[0m\n' | sanitize_stream > "$scratch/sanitized.txt"
+grep -qF $'\033[48;2;205;49;49;37;1mBADGE\033[0m' "$scratch/sanitized.txt" ||
+  die "Стандартный фон не переведён в truecolor."
 printf '%s\n' 'if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then' |
   sed 's/-t 1 \&\& //' | grep -qF 'if [[ -z "${NO_COLOR:-}" ]]; then' ||
   die "ipregion: принудительный цвет не применяется."
