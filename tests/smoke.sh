@@ -90,10 +90,14 @@ if compgen -G "$OUT/.bench-*" >/dev/null; then die "Временные файл�
 
 ensure_freeze
 export REAL_FREEZE="$FREEZE_BIN"
+export FREEZE_COUNT="$scratch/freeze-count"
 FREEZE_BIN="$scratch/freeze"
 cat > "$FREEZE_BIN" <<'SH'
 #!/usr/bin/env bash
-[[ "$3" == */sysinfo.png ]] && exit 1
+n="$(cat "$FREEZE_COUNT" 2>/dev/null || true)"
+n=$(( ${n:-0} + 1 )); echo "$n" > "$FREEZE_COUNT"
+if [ -n "${FREEZE_FAIL_FIRST:-}" ] && [ "$n" -le "$FREEZE_FAIL_FIRST" ]; then exit 1; fi
+[[ -n "${FREEZE_FAIL_FILE:-}" && "$3" == *"$FREEZE_FAIL_FILE" ]] && exit 1
 exec "$REAL_FREEZE" "$@"
 SH
 chmod +x "$FREEZE_BIN"
@@ -103,9 +107,19 @@ MONO_FONT="$(resolve_font)"
 export RENDER_TIMEOUT=10
 detect_pkg
 setup_privileges
-render_pngs sysinfo.txt speed-test.txt speed-test-fallback.txt deadline.txt
+# Ретрай: первая попытка freeze падает, вторая должна спасти скриншот.
+export FREEZE_FAIL_FIRST=1
+render_pngs sysinfo.txt
+[ -s "$OUT/sysinfo.png" ] || die "Ретрай не спас первую попытку freeze."
+rm -f -- "$OUT/sysinfo.png"
+# Стабильная неудача: битый PNG не должен попасть в отчёт, исходник - остаться.
+export FREEZE_FAIL_FILE=sysinfo.png FREEZE_NO_REDOWNLOAD=1
+render_pngs sysinfo.txt
 [ ! -e "$OUT/sysinfo.png" ] || die "Битый PNG попал в отчёт."
 [ -s "$OUT/sysinfo.txt" ] || die "После неудачи freeze потерян исходник."
+unset FREEZE_FAIL_FIRST FREEZE_FAIL_FILE FREEZE_NO_REDOWNLOAD
+REPORT_IMAGES=()
+render_pngs speed-test.txt speed-test-fallback.txt deadline.txt
 for id in speed-test speed-test-fallback deadline; do
   signature="$(od -An -tx1 -N8 "$OUT/$id.png" | tr -d ' \n')"
   [ "$signature" = 89504e470d0a1a0a ] || die "Не создан PNG для $id."

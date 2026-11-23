@@ -889,7 +889,8 @@ render_pngs() {
     done
     # Если freeze скачан нами и стабильно падает - бинарник с CDN мог быть
     # битым: перекачиваем по контрольной сумме и пробуем ещё раз.
-    if (( ! ok_png )) && [ -n "$FREEZE_DIR" ]; then
+    # FREEZE_NO_REDOWNLOAD - тестовый выключатель.
+    if (( ! ok_png )) && [ -n "$FREEZE_DIR" ] && [ -z "${FREEZE_NO_REDOWNLOAD:-}" ]; then
       warn "freeze стабильно падает - перекачиваю бинарник."
       rm -rf -- "$FREEZE_DIR"; FREEZE_DIR=""; FREEZE_BIN=""; MAKE_PNG=1
       ensure_freeze
