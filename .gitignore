@@ -3,3 +3,4 @@ scriptest-*/
 bin/
 *.zip
 *.tar.gz
+.serena/

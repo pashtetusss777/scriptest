@@ -14,7 +14,6 @@
 Один файл, ноль установки. Кинул на сервер, выбрал тесты, забрал ZIP с картинками.
 
 [![CI](https://github.com/pashtetusss777/scriptest/actions/workflows/smoke.yml/badge.svg)](https://github.com/pashtetusss777/scriptest/actions/workflows/smoke.yml)
-![version](https://img.shields.io/badge/version-0.3.11-blue)
 
 </div>
 

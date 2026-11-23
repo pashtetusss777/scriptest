@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.11"
+VERSION="0.3.12"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -151,16 +151,20 @@ EOF
 }
 
 parse_flags() {
+  # Для флагов с аргументом: без значения при set -u падает "$2": unbound variable.
+  need_arg() {
+    [ $# -ge 2 ] || { err "Для $1 нужен аргумент."; usage; exit 1; }
+  }
   while [ $# -gt 0 ]; do
     case "$1" in
       -a|--all)     ONLY="__all__"; shift ;;
-      -o|--only)    ONLY="$2"; shift 2 ;;
-      -s|--skip)    SKIP="$2"; shift 2 ;;
+      -o|--only)    need_arg "$@"; ONLY="$2"; shift 2 ;;
+      -s|--skip)    need_arg "$@"; SKIP="$2"; shift 2 ;;
       -l|--list)    list_tests; exit 0 ;;
-      -t|--theme)   THEME="$2"; shift 2 ;;
+      -t|--theme)   need_arg "$@"; THEME="$2"; shift 2 ;;
       --no-png)     MAKE_PNG=0; shift ;;
       --no-zip)     MAKE_ZIP=0; shift ;;
-      --workdir)    OUT="$2"; shift 2 ;;
+      --workdir)    need_arg "$@"; OUT="$2"; shift 2 ;;
       -h|--help)    usage; exit 0 ;;
       -v|--version) echo "scriptest v$VERSION"; exit 0 ;;
       --banner)     print_banner; exit 0 ;;
@@ -511,7 +515,8 @@ setup_workdir() {
   [ -n "$cpu_model" ] || cpu_model="$(uname -m)"
   cores="$(nproc 2>/dev/null || echo '?')"
   if command -v free >/dev/null 2>&1; then
-    ram_gb="$(( $(free -b | awk '/Mem:/{print $2}') / 1024 / 1024 / 1024 ))"
+    ram_gb="$(free -b 2>/dev/null | awk '/Mem:/{printf "%d", $2/1073741824; exit}')"
+    [ -n "$ram_gb" ] || ram_gb="?"
   else
     ram_gb="?"
   fi
@@ -586,15 +591,18 @@ sanitize_stream() {
       v = pa[i]
       if (v == 38 || v == 48) {
         # цвет или фон с палитрой/truecolor: копируем его параметры целиком,
-        # чтобы значения 40-47 внутри 48;2;R;G;B не принять за фон
+        # чтобы значения 40-47 внутри 48;2;R;G;B не принять за фон.
+        # Форма с colorspace (38;2;cs;R;G;B) занимает на один параметр больше.
         if (pa[i+1] == 5) {
           res = res v ";" pa[i+1] ";" pa[i+2] ";"; i += 2
         } else if (pa[i+1] == 2) {
-          res = res v ";" pa[i+1] ";" pa[i+2] ";" pa[i+3] ";" pa[i+4] ";"; i += 4
+          if (n - i - 1 == 4) { res = res v ";" pa[i+1] ";" pa[i+2] ";" pa[i+3] ";" pa[i+4] ";" pa[i+5] ";"; i += 5 }
+          else { res = res v ";" pa[i+1] ";" pa[i+2] ";" pa[i+3] ";" pa[i+4] ";"; i += 4 }
         } else {
           res = res v ";"
         }
       }
+      else if (v == "") continue
       else if (v == 40) res = res "48;2;0;0;0;"
       else if (v == 41) res = res "48;2;205;49;49;"
       else if (v == 42) res = res "48;2;13;188;121;"
@@ -664,6 +672,17 @@ format_duration() {
   printf '%02d:%02d:%02d' "$((seconds / 3600))" "$((seconds / 60 % 60))" "$((seconds % 60))"
 }
 
+# GNU timeout умеет -k, а busybox до 1.35 нет: проверяем один раз и звеним
+# через обёртку, чтобы на Alpine каждый тест не падал мгновенно.
+T_K=""
+timeout_run() {
+  local k="$1" limit="$2"; shift 2
+  if [ -z "$T_K" ]; then
+    if timeout -k 1 true 2>/dev/null; then T_K=1; else T_K=0; fi
+  fi
+  if [ "$T_K" = 1 ]; then timeout -k "$k" "$limit" "$@"; else timeout "$limit" "$@"; fi
+}
+
 # run_test <id> <title> <timeout> <command>
 run_test() {
   local id="$1" title="$2" tmo="$3" cmd="$4"
@@ -695,7 +714,7 @@ run_test() {
     local runner=''
     trap '[[ -z "$runner" ]] || kill -KILL -- "-$runner" 2>/dev/null; wait 2>/dev/null; exit 130' INT TERM
     set -m
-    timeout -k 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > raw 2>&1 &
+    timeout_run 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > raw 2>&1 &
     runner=$!
     wait "$runner"; rc=$?
     runner=''
@@ -713,6 +732,9 @@ run_test() {
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     status="TIMEOUT"
     warn "Тест '$id' прерван по таймауту ($duration)."
+  elif [ "$rc" -ge 128 ]; then
+    status="KILLED"
+    warn "Тест '$id' убит сигналом SIG$((rc - 128)) ($duration)."
   elif [ "$rc" -ne 0 ]; then
     status="FAILED"
     warn "Тест '$id' завершился с ошибкой (код $rc, $duration)."
@@ -799,9 +821,10 @@ select_tests() {
   local -a result=()
   for id in "${ids[@]}"; do
     if [ -n "$SKIP" ] && [[ ",$SKIP," == *",$id,"* ]]; then continue; fi
-    result+=("$id")
+    # без дублей: повтор в --only ломает пары «лог/PNG» и очистку отчёта
+    [[ " ${result[*]} " == *" $id "* ]] || result+=("$id")
   done
-  SELECTED=("${result[@]}")
+  SELECTED=(${result[@]+"${result[@]}"})
 }
 
 # ----------------------------------------------------------------------------
@@ -813,7 +836,7 @@ render_image() {
   # --language ansi: freeze рисует текст с сохранением ANSI-цветов из лога.
   # GOMAXPROCS=1: у freeze 0.2.2 на многоядерных машинах изредка случается
   # SIGSEGV в рантайме Go — рендеру параллелизм всё равно не нужен.
-  GOMAXPROCS=1 timeout -k 5 60 "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 --font.family "$MONO_FONT" "$@" < "$input"
+  GOMAXPROCS=1 timeout_run 5 "${RENDER_TIMEOUT:-60}" "$FREEZE_BIN" - --output "$output" --language ansi --wrap 120 --font.family "$MONO_FONT" "$@" < "$input"
 }
 
 render_pngs() {
@@ -838,7 +861,7 @@ render_pngs() {
       # Битую или пустую картинку в отчёт не берём: лучше оставить .txt,
       # чем потерять текст теста из-за пустого PNG.
       rm -f -- "$image"
-      [ "$attempt" -lt 3 ] && sleep 1
+      { [ "$attempt" -lt 3 ] && sleep 1; } || true
     done
     if (( ! ok_png )); then
       warn "PNG для ${f##*/} не создан, исходник оставлен${message:+: ${message%%$'\n'*}}."
@@ -866,7 +889,7 @@ make_summary() {
     echo "| Тест | Статус | Время |"
     echo "|------|--------|-------|"
     local r id status duration
-    for r in "${RESULTS[@]}"; do
+    for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
       IFS='|' read -r id status duration <<< "$r"
       printf '| %s | %s | %s |\n' "$id" "$status" "$duration"
     done
@@ -874,7 +897,7 @@ make_summary() {
     echo "## Файлы"
     echo
     local f
-    for f in "${REPORT_LOGS[@]}" "${REPORT_IMAGES[@]}"; do
+    for f in "${REPORT_LOGS[@]}" ${REPORT_IMAGES[@]+"${REPORT_IMAGES[@]}"}; do
       printf -- '- `%s`\n' "$f"
     done
   } > "$md" || die "Не удалось создать $md"
@@ -888,9 +911,10 @@ make_zip() {
   fi
   local dir="${OUT%/*}" archive="$OUT/.images.zip" name=report.zip n=1 file
   # Сначала проверяем ZIP, затем публикуем без перезаписи даже при параллельных запусках.
+  # Без -T: у busybox-ln его нет, а без -f обычный ln и так не перезапишет цель.
   ( cd -- "$OUT" && zip -q -T "$archive" "${REPORT_IMAGES[@]}" ) ||
     { warn "Не удалось собрать и проверить ZIP. Отчёт остался в $OUT."; return 1; }
-  while ! ln -T -- "$archive" "$dir/$name" 2>/dev/null; do
+  while ! ln "$archive" "$dir/$name" 2>/dev/null; do
     if [[ ! -e "$dir/$name" && ! -L "$dir/$name" ]]; then
       warn "Не удалось сохранить $dir/$name. Архив: $archive"; return 1
     fi
@@ -914,7 +938,7 @@ make_zip() {
 print_results() {
   info "Итоги:"
   local r id st duration
-  for r in "${RESULTS[@]}"; do
+  for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
     IFS='|' read -r id st duration <<< "$r"
     case "$st" in
       OK)      ok   "  $id · $st · $duration" ;;
@@ -1089,13 +1113,26 @@ main() {
   else
     # При curl | bash stdin содержит код. Все интерактивные вопросы читаем из терминала.
     if [ ! -t 0 ]; then
-      { exec </dev/tty; } 2>/dev/null || die "Нет терминала. Укажи --all или --only <id>."
+      # сам exec при неудаче фатален для неинтерактивного bash, проверяем в подоболочке
+      ( exec </dev/tty ) 2>/dev/null ||
+        die "Нет терминала. Укажи --all или --only <id>."
+      exec </dev/tty
     fi
     SELECTED=()
     menu || die "Нет ввода. Укажи --all или --only <id>."
   fi
 
   [ ${#SELECTED[@]} -gt 0 ] || die "Не выбран ни один тест."
+  # Опечатка в --only не должна проходить всю подготовку и собирать пустой отчёт.
+  local -a valid=()
+  local id
+  for id in "${SELECTED[@]}"; do
+    if test_field "$id" tmo >/dev/null; then valid+=("$id")
+    else warn "Неизвестный тест: $id"
+    fi
+  done
+  [ ${#valid[@]} -gt 0 ] || die "Не выбран ни один известный тест: ${SELECTED[*]}."
+  SELECTED=("${valid[@]}")
   if (( ASK_BBR )); then offer_bbr; fi
   detect_pkg
   MONO_FONT="$(resolve_font)"

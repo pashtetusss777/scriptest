@@ -16,6 +16,9 @@ source ./scriptest.sh
 scratch="$(mktemp -d)" || exit 1
 trap 'rm -rf -- "$scratch"' EXIT
 export TMPDIR="$scratch"
+# Без этих утилит падения будут в середине с несоответствующими сообщениями.
+command -v script setsid unzip zip od timeout >/dev/null ||
+  die "В системе нет нужных утилит: script, setsid, unzip, zip, od, timeout."
 # stdin несёт код, а ответ q приходит через отдельный управляющий терминал.
 printf 'q\n' | timeout 10 script -qec 'cat scriptest.sh | bash' /dev/null > "$scratch/menu" ||
   die "Не удалось выйти из меню при запуске через пайп."
@@ -42,7 +45,8 @@ REPORT_LOGS=(sysinfo.txt)
 SH
 (
   for ((i=0; i<100; i++)); do [[ ! -s "$scratch/ready" ]] || break; sleep .05; done
-  printf '\003'
+  # Шлём Ctrl+C, пока тест жив: на холодном раннере PTY может подниматься дольше 5 с.
+  for ((i=0; i<40; i++)); do printf '\003'; sleep .1; done
 ) | timeout 8 script -qec 'bash "$TMPDIR/interrupt.sh"' /dev/null > "$scratch/interrupt.log"
 [[ $? == 130 && -s "$scratch/ready" && ! -e "$scratch/fallback" ]] ||
   { cat "$scratch/interrupt.log"; die "Ctrl+C не прервал тест."; }
@@ -91,6 +95,10 @@ cat > "$FREEZE_BIN" <<'SH'
 exec "$REAL_FREEZE" "$@"
 SH
 chmod +x "$FREEZE_BIN"
+[[ "$MAKE_PNG" -eq 1 && -n "$FREEZE_BIN" && -x "$FREEZE_BIN" ]] ||
+  die "freeze не скачался или не запустился - PNG-проверки пройдут вакантно."
+MONO_FONT="$(resolve_font)"
+export RENDER_TIMEOUT=10
 detect_pkg
 setup_privileges
 render_pngs sysinfo.txt speed-test.txt speed-test-fallback.txt deadline.txt

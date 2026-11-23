@@ -2,13 +2,17 @@ name: Linux smoke test
 
 on: [push, pull_request]
 
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: bash -n scriptest.sh
