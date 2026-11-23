@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.7"
+VERSION="0.3.8"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -733,7 +733,9 @@ run_test_by_id() {
   tmo="$(test_field "$id" tmo)"
   case "$id" in
     ipcheck)     run_test "$id" "$title" "$tmo" "bash <(curl -Ls IP.Check.Place) -l en" ;;
-    ipregion)    run_test "$id" "$title" "$tmo" "bash <(wget -qO - https://github.com/vernette/ipregion/raw/master/ipregion.sh)" ;;
+    # ipregion включает цвета только если stdout — терминал. В логе его нет,
+    # поэтому убираем проверку -t 1 прямо в скачиваемом скрипте (NO_COLOR работает).
+    ipregion)    run_test "$id" "$title" "$tmo" "wget -qO- https://github.com/vernette/ipregion/raw/master/ipregion.sh | sed 's/-t 1 \&\& //' | bash -s --" ;;
     dpi)         run_test "$id" "$title" "$tmo" "bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi" ;;
     insta)       run_test "$id" "$title" "$tmo" "bash <(curl -L -s https://bench.openode.xyz/checker_inst.sh)" ;;
     speed-ru)    run_test "$id" "$title" "$tmo" "wget -qO- bench.tlab.pw | bash" ;;
