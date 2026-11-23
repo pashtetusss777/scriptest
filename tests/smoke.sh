@@ -74,6 +74,9 @@ printf 'old\rNEW\n' | sanitize_stream > "$scratch/sanitized.txt"
 grep -qF 'NEW' "$scratch/sanitized.txt" &&
   ! grep -qF 'old' "$scratch/sanitized.txt" ||
   die "Предыдущий CR-кадр остался в логе."
+printf '%s\n' 'if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then' |
+  sed 's/-t 1 \&\& //' | grep -qF 'if [[ -z "${NO_COLOR:-}" ]]; then' ||
+  die "ipregion: принудительный цвет не применяется."
 if compgen -G "$OUT/.bench-*" >/dev/null; then die "Временные файлы теста не удалены."; fi
 
 ensure_freeze

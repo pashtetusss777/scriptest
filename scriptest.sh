@@ -384,7 +384,7 @@ detect_pkg() {
 }
 
 install_deps() {
-  local need=() p
+  local need=()
   command -v curl >/dev/null 2>&1 || need+=("curl")
   command -v wget >/dev/null 2>&1 || need+=("wget")
   command -v zip  >/dev/null 2>&1 || need+=("zip")
@@ -695,7 +695,6 @@ run_test() {
   RESULTS+=("$id|$status|$duration")
   # Превью chafa уже показало отчёт целиком — не печатаем его второй раз.
   if (( ! PREVIEW_SHOWN )); then sed -n '/^====/,$p' "$log"; fi
-  PREVIEW_SHOWN=0
   render_pngs "$id.txt"
 }
 
