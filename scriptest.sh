@@ -675,12 +675,15 @@ format_duration() {
 # GNU timeout умеет -k, а busybox до 1.35 нет: проверяем один раз и звеним
 # через обёртку, чтобы на Alpine каждый тест не падал мгновенно.
 T_K=""
-timeout_run() {
-  local k="$1" limit="$2"; shift 2
+timeout_has_k() {
   if [ -z "$T_K" ]; then
     if timeout -k 1 true 2>/dev/null; then T_K=1; else T_K=0; fi
   fi
-  if [ "$T_K" = 1 ]; then timeout -k "$k" "$limit" "$@"; else timeout "$limit" "$@"; fi
+  [ "$T_K" = 1 ]
+}
+timeout_run() {
+  local k="$1" limit="$2"; shift 2
+  if timeout_has_k; then timeout -k "$k" "$limit" "$@"; else timeout "$limit" "$@"; fi
 }
 
 # run_test <id> <title> <timeout> <command>
@@ -714,7 +717,12 @@ run_test() {
     local runner=''
     trap '[[ -z "$runner" ]] || kill -KILL -- "-$runner" 2>/dev/null; wait 2>/dev/null; exit 130' INT TERM
     set -m
-    timeout_run 15 "$tmo" bash -o pipefail -c "$cmd" </dev/null > raw 2>&1 &
+    # timeout у GNU уводит ребёнка в свою группу (setpgid): --foreground держит
+    # его в группе раннера, иначе kill по группе после Ctrl+C его не достанет.
+    # Запускаем сам бинарник: фон с функцией-обёрткой сломал бы группу раннера.
+    local -a timeout_cmd=(timeout "$tmo")
+    if timeout_has_k; then timeout_cmd=(timeout -k 15 --foreground "$tmo"); fi
+    "${timeout_cmd[@]}" bash -o pipefail -c "$cmd" </dev/null > raw 2>&1 &
     runner=$!
     wait "$runner"; rc=$?
     runner=''
