@@ -102,8 +102,8 @@ make_summary
 grep -Fq 'speed-test-fallback.png' "$OUT/summary.md" || die "Скриншот отсутствует в сводке."
 echo previous > "$scratch/report.zip"
 make_zip || exit 1
-[ "$(cat "$scratch/report.zip")" = previous ] && [ ! -e "$OUT" ] ||
-  die "Старый архив изменён или временная папка осталась."
+[ "$(cat "$scratch/report.zip")" = previous ] || die "Старый архив изменён."
+[ -e "$OUT" ] || die "При неполном отчёте исходники не должны удаляться."
 [ "$(unzip -Z1 "$scratch/report-2.zip" | sort)" = "$(printf '%s\n' speed-test.png speed-test-fallback.png deadline.png | sort)" ] ||
   die "Архив содержит неверный набор файлов."
 unzip -tq "$scratch/report-2.zip" || exit 1
