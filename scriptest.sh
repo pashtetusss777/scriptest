@@ -584,7 +584,18 @@ sanitize_stream() {
     n = split(params, pa, ";"); res = ""
     for (i = 1; i <= n; i++) {
       v = pa[i]
-      if (v == 40) res = res "48;2;0;0;0;"
+      if (v == 38 || v == 48) {
+        # цвет или фон с палитрой/truecolor: копируем его параметры целиком,
+        # чтобы значения 40-47 внутри 48;2;R;G;B не принять за фон
+        if (pa[i+1] == 5) {
+          res = res v ";" pa[i+1] ";" pa[i+2] ";"; i += 2
+        } else if (pa[i+1] == 2) {
+          res = res v ";" pa[i+1] ";" pa[i+2] ";" pa[i+3] ";" pa[i+4] ";"; i += 4
+        } else {
+          res = res v ";"
+        }
+      }
+      else if (v == 40) res = res "48;2;0;0;0;"
       else if (v == 41) res = res "48;2;205;49;49;"
       else if (v == 42) res = res "48;2;13;188;121;"
       else if (v == 43) res = res "48;2;229;229;16;"
