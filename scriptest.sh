@@ -8,7 +8,7 @@
 #  Лицензия: MIT
 # ============================================================================
 set -u
-VERSION="0.3.13"
+VERSION="0.3.14"
 
 # ----------------------------------------------------------------------------
 # Внешний вид
@@ -705,16 +705,15 @@ timeout_run() {
 # run_test <id> <title> <timeout> <command>
 run_test() {
   local id="$1" title="$2" tmo="$3" cmd="$4"
-  local log="$OUT/$id.txt" start duration status size rc
+  local log="$OUT/$id.txt" start duration status rc
 
+  # Лог содержит только заголовок теста и его вывод: шапка с характеристиками
+  # сервера - отдельный скрин sysinfo.png, дублировать её перед каждым тестом не нужно.
   {
     echo "================================================================"
     echo "  $title"
     echo "================================================================"
-    cat "$SYSINFO_FILE"
-    echo "================================================================"
   } > "$log" || die "Не удалось записать $log"
-  size="$(wc -c < "$log")"
 
   info ">> $title (лимит $(format_duration "$tmo"))"
   start=$SECONDS
@@ -762,18 +761,18 @@ run_test() {
   elif [ "$rc" -ne 0 ]; then
     status="FAILED"
     warn "Тест '$id' завершился с ошибкой (код $rc, $duration)."
-  elif [ "$(wc -c < "$log")" -eq "$size" ]; then
+  elif [ ! -s "$log" ]; then
     status="FAILED"
     warn "Тест '$id' не выдал результатов ($duration)."
   else
     status="OK"
     ok "Тест '$id' завершён ($duration)."
   fi
-  printf '\n[scriptest] %s · %s · exit %s\n' "$status" "$duration" "$rc" >> "$log" ||
+  printf '\n[scriptest] %s · %s\n' "$status" "$duration" >> "$log" ||
     die "Не удалось дописать $log"
   [[ " ${REPORT_LOGS[*]} " == *" $id.txt "* ]] || REPORT_LOGS+=("$id.txt")
   RESULTS+=("$id|$status|$duration")
-  sed -n '/^====/,$p' "$log"
+  cat "$log"
   render_pngs "$id.txt"
 }
 
@@ -1135,6 +1134,26 @@ confirm_all() {
   confirm "Запустить все тесты?"
 }
 
+# Выбор тестов по флагам или через меню + отсев неизвестных id
+choose_tests() {
+  if [ -n "$ONLY" ]; then
+    select_tests
+    if [ "$ONLY" = "__all__" ] && [ -t 0 ]; then ASK_BBR=1; fi
+  else
+    SELECTED=()
+    menu || die "Нет ввода. Укажи --all или --only <id>."
+  fi
+  local -a valid=()
+  local id
+  for id in ${SELECTED[@]+"${SELECTED[@]}"}; do
+    if test_field "$id" tmo >/dev/null; then valid+=("$id")
+    else warn "Неизвестный тест: $id"
+    fi
+  done
+  [ ${#valid[@]} -gt 0 ] || die "Не выбран ни один известный тест: ${SELECTED[*]:-пусто}."
+  SELECTED=("${valid[@]}")
+}
+
 # ----------------------------------------------------------------------------
 # main
 # ----------------------------------------------------------------------------
@@ -1148,10 +1167,9 @@ main() {
   export DEBIAN_FRONTEND=noninteractive
   setup_privileges
 
-  if [ -n "$ONLY" ]; then
-    select_tests
-    if [ "$ONLY" = "__all__" ] && [ -t 0 ]; then ASK_BBR=1; fi
-  else
+  local interactive=0
+  if [ -z "$ONLY" ]; then
+    interactive=1
     # При curl | bash stdin содержит код. Все интерактивные вопросы читаем из терминала.
     if [ ! -t 0 ]; then
       # сам exec при неудаче фатален для неинтерактивного bash, проверяем в подоболочке
@@ -1159,43 +1177,47 @@ main() {
         die "Нет терминала. Укажи --all или --only <id>."
       exec </dev/tty
     fi
-    SELECTED=()
-    menu || die "Нет ввода. Укажи --all или --only <id>."
   fi
 
-  [ ${#SELECTED[@]} -gt 0 ] || die "Не выбран ни один тест."
-  # Опечатка в --only не должна проходить всю подготовку и собирать пустой отчёт.
-  local -a valid=()
-  local id
-  for id in "${SELECTED[@]}"; do
-    if test_field "$id" tmo >/dev/null; then valid+=("$id")
-    else warn "Неизвестный тест: $id"
-    fi
-  done
-  [ ${#valid[@]} -gt 0 ] || die "Не выбран ни один известный тест: ${SELECTED[*]}."
-  SELECTED=("${valid[@]}")
-  if (( ASK_BBR )); then offer_bbr; fi
+  choose_tests
+  if (( ASK_BBR )); then
+    offer_bbr
+    ASK_BBR=0   # BBR спрашиваем один раз за сессию, а не перед каждым кругом
+  fi
   detect_pkg
   MONO_FONT="$(resolve_font)"
   info "Шрифт для скриншотов: $MONO_FONT"
   install_deps
   umask 077
-  setup_workdir
   trap 'spinner_stop; [ -z "$FREEZE_DIR" ] || rm -rf -- "$FREEZE_DIR"' EXIT
   ensure_freeze
-  render_pngs sysinfo.txt
 
-  info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
-  TEST_TOTAL=${#SELECTED[@]}
-  TEST_NO=0
-  local id
-  for id in "${SELECTED[@]}"; do
-    TEST_NO=$((TEST_NO + 1))
-    run_test_by_id "$id"
+  while true; do
+    RESULTS=()
+    TESTS_ELAPSED=0
+    REPORT_IMAGES=()
+    setup_workdir
+    render_pngs sysinfo.txt
+
+    info "Тестов к запуску: ${#SELECTED[@]} (${SELECTED[*]})"
+    TEST_TOTAL=${#SELECTED[@]}
+    TEST_NO=0
+    local id
+    for id in "${SELECTED[@]}"; do
+      TEST_NO=$((TEST_NO + 1))
+      run_test_by_id "$id"
+    done
+
+    make_summary
+    make_zip
+
+    # Отчёт готов и архив собран: с терминалом возвращаемся в меню,
+    # без терминала (CI, пайп) завершаемся.
+    (( interactive )) || break
+    printf '\n  %bEnter - вернуться в меню, Ctrl+C - выход%b\n\n' "${C_DIM}" "${C_RESET}"
+    read -r _ || break
+    choose_tests
   done
-
-  make_summary
-  make_zip
 }
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
